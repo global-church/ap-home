@@ -12,6 +12,9 @@ export { RateLimiter } from './ratelimit';
 interface Env { TOKENS: KVNamespace; RATE: DurableObjectNamespace; ORIGIN: string; ESTIMATE_GAS_CAP?: string; ORIGIN_CLIENT_ID?: string; ORIGIN_CLIENT_SECRET?: string; }
 const err = (id: unknown, code: number, message: string, status = 200) =>
   new Response(JSON.stringify({ jsonrpc: '2.0', id: id ?? null, error: { code, message } }), { status, headers: { 'content-type': 'application/json' } });
+/** How long a colo may reuse a token record it read from KV. Also the bound on how long a REVOKED token
+ *  keeps working at a colo that had just read it (approved by Global.Church, 2026-10-07). */
+export const TOKEN_CACHE_TTL_S = 60;
 const sha256 = async (s: string) => [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)))].map(b => b.toString(16).padStart(2, '0')).join('');
 // Cloudflare Access service-token header names — also ordinary headers, so an origin fronted some other
 // way (nginx, say) can check the same pair without Access being involved.
@@ -54,7 +57,9 @@ export default {
       const bearer = (req.headers.get('authorization') || '').replace(/^Bearer\s+/i, '').trim()
         || new URL(req.url).searchParams.get('k') || '';
       if (!bearer) return err(null, -32001, 'missing app token', 401);
-      const rec = await env.TOKENS.get(`t:${await sha256(bearer)}`, 'json') as { app: string; readRps: number; writeRps: number } | null;
+      // cacheTtl: an uncached KV read at the caller's colo is a cross-region trip on EVERY call, and a flow makes
+      // 10–30 sequential calls (measured 2026-10-07). See TOKEN_CACHE_TTL_S for what it costs revocation.
+      const rec = await env.TOKENS.get(`t:${await sha256(bearer)}`, { type: 'json', cacheTtl: TOKEN_CACHE_TTL_S }) as { app: string; readRps: number; writeRps: number } | null;
       if (!rec) return err(null, -32001, 'unknown or revoked app token', 401);
       let body: Rpc | Rpc[]; try { body = await req.json(); } catch { return err(null, -32700, 'parse error'); }
       const calls = Array.isArray(body) ? body : [body];
@@ -62,22 +67,30 @@ export default {
       if (calls.length === 0 || calls.length > 50) return err(null, -32600, 'empty or oversized batch');
       for (const c of calls) if (typeof c?.method !== 'string' || !isAllowed(c.method)) return err(c?.id ?? null, -32601, `method not permitted: ${c?.method}`, 403);
       const reads = calls.filter(c => !isWrite(c.method)).length, writes = calls.length - reads;
-      const rl = env.RATE.get(env.RATE.idFromName(rec.app));
-      const ok = await rl.fetch('https://rl/take', { method: 'POST', body: JSON.stringify({ reads, writes, readRps: rec.readRps, writeRps: rec.writeRps }) }).then(r => r.json() as Promise<{ ok: boolean; retryAfter?: number }>);
-      if (!ok.ok) return err(calls[0]?.id ?? null, -32005, `rate limited (retry ~${ok.retryAfter}s)`, 429);
-      if (!Array.isArray(body)) {
-        const ttl = CACHE_TTL_S(body.method, body.params ?? []);
-        if (ttl > 0) {
-          const key = new Request(cacheKey(env.ORIGIN, body.method, await sha256(JSON.stringify(body.params ?? []))));
-          const hit = await caches.default.match(key);
-          if (hit) { const j = await hit.json() as { result?: unknown }; return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: j.result }), { headers: { 'content-type': 'application/json', 'x-cache': 'HIT' } }); }
-          const res = await forward(env, body); const j = await res.clone().json() as { error?: unknown; result?: unknown };
-          // Never cache an error OR a null/absent result — a pending tx's receipt/getBlock returns
-          // null, and caching it would mask the real value for the whole TTL (starves receipt polls).
-          if (!j.error && j.result != null) ctx.waitUntil(caches.default.put(key, new Response(await res.clone().text(), { headers: { 'cache-control': `max-age=${ttl}` } })));
-          const h = new Headers(res.headers); h.set('x-cache', 'MISS'); return new Response(res.body, { status: res.status, headers: h });
-        }
+      const take = () => {
+        const rl = env.RATE.get(env.RATE.idFromName(rec.app));
+        return rl.fetch('https://rl/take', { method: 'POST', body: JSON.stringify({ reads, writes, readRps: rec.readRps, writeRps: rec.writeRps }) }).then(r => r.json() as Promise<{ ok: boolean; retryAfter?: number }>);
+      };
+      const limited = (ok: { retryAfter?: number }) => err(calls[0]?.id ?? null, -32005, `rate limited (retry ~${ok.retryAfter}s)`, 429);
+      // A cacheable single read is looked up BEFORE the rate limiter: the limiter is a Durable Object with a
+      // durable write per call — a cross-region round trip on every request — and a HIT costs the origin
+      // nothing, so it does not spend the app's read budget. A MISS still pays the limiter before the origin,
+      // so the budget still bounds what reaches the chain. Token check, allow-list and gas cap are unchanged.
+      const ttl = Array.isArray(body) ? 0 : CACHE_TTL_S(body.method, body.params ?? []);
+      if (!Array.isArray(body) && ttl > 0) {
+        const key = new Request(cacheKey(env.ORIGIN, body.method, await sha256(JSON.stringify(body.params ?? []))));
+        const hit = await caches.default.match(key);
+        if (hit) { const j = await hit.json() as { result?: unknown }; return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: j.result }), { headers: { 'content-type': 'application/json', 'x-cache': 'HIT' } }); }
+        const ok = await take();
+        if (!ok.ok) return limited(ok);
+        const res = await forward(env, body); const j = await res.clone().json() as { error?: unknown; result?: unknown };
+        // Never cache an error OR a null/absent result — a pending tx's receipt/getBlock returns
+        // null, and caching it would mask the real value for the whole TTL (starves receipt polls).
+        if (!j.error && j.result != null) ctx.waitUntil(caches.default.put(key, new Response(await res.clone().text(), { headers: { 'cache-control': `max-age=${ttl}` } })));
+        const h = new Headers(res.headers); h.set('x-cache', 'MISS'); return new Response(res.body, { status: res.status, headers: h });
       }
+      const ok = await take();
+      if (!ok.ok) return limited(ok);
       return forward(env, body);
     };
 
