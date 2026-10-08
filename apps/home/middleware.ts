@@ -1,0 +1,43 @@
+// The pre-launch password (src/lib/site-gate.ts). Off unless HOME_SITE_PASSWORD is set; every rule about what
+// it must never stand in front of lives there, next to its tests.
+import { NextResponse, type NextRequest } from 'next/server';
+
+import { decide, gatePageHtml } from './src/lib/site-gate';
+
+export async function middleware(req: NextRequest) {
+  const password = process.env.HOME_SITE_PASSWORD;
+  if (!password) return NextResponse.next();
+  const decision = await decide({
+    password,
+    cookieDomain: process.env.HOME_GATE_COOKIE_DOMAIN,
+    method: req.method,
+    url: req.nextUrl,
+    headers: req.headers,
+    cookies: (name) => req.cookies.get(name)?.value,
+    form: async () => {
+      const f = await req.formData().catch(() => null);
+      return { p: String(f?.get('p') ?? ''), next: String(f?.get('next') ?? '/') };
+    },
+  });
+  switch (decision.kind) {
+    case 'pass':
+      return NextResponse.next();
+    case 'pass-flow': {
+      const res = NextResponse.next();
+      res.headers.append('set-cookie', decision.setCookie);
+      return res;
+    }
+    case 'redirect':
+      return new NextResponse(null, { status: 303, headers: { location: decision.location, 'set-cookie': decision.setCookie } });
+    case 'page':
+      return new NextResponse(gatePageHtml(process.env.NEXT_PUBLIC_BRAND_NAME ?? 'Home', decision.wrong, decision.next), {
+        status: 401,
+        headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' },
+      });
+  }
+}
+
+// Static build output never reaches the middleware at all; everything else is decided by site-gate.ts.
+export const config = {
+  matcher: ['/((?!_next/static|_next/image).*)'],
+};
