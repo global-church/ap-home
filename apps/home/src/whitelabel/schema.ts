@@ -362,6 +362,8 @@ export interface ManageableAgent {
 export interface WhiteLabelCopy {
   // Arrival into the Home — belonging + ownership, not a login page.
   arrivalTitle: string;
+  /** The line under "Continue to <app>" in a relying app's sign-in window. */
+  enrollSub: string;
   arrivalBody: string;
   // Onboarding overview (lists the value steps up front).
   overviewTitle: string;

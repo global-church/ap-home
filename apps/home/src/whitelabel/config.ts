@@ -474,7 +474,7 @@ const faithImpact: WhiteLabelConfig = {
         // their Global.Church ID, not an "Impact home".
         orgCreate: {
           explainer: 'This single approval sets up {org}. Your church gets its own listing page on {app}. Nothing beyond that.',
-          disconnect: 'You can disconnect {app} any time from your Global.Church ID.',
+          disconnect: 'You can disconnect {app} any time from your Great Commission ID.',
           receipt: 'Your church is set up.',
         },
         hideSubstrate: true,
@@ -1160,7 +1160,10 @@ const faithImpact: WhiteLabelConfig = {
   // {app} = the missional-community app asking for permission.
   copy: {
     // Arrival into your home.
-    arrivalTitle: 'Welcome to your Impact Community Home',
+    // Env-overridable so a deployment can name its own front door (Global.Church: "Sign in with your Great
+    // Commission ID (GCID)", Paul 2026-10-08). Unset = the original copy.
+    arrivalTitle: process.env.NEXT_PUBLIC_ARRIVAL_TITLE || 'Welcome to your Impact Community Home',
+    enrollSub: process.env.NEXT_PUBLIC_SIGN_IN_LINE || 'Sign in, then you’ll return.',
     arrivalBody:
       "A place of your own in the missional community — where you oversee what you help lead, manage what you steward, and protect what's entrusted to you.",
     overviewTitle: "Here's how you'll get set up",

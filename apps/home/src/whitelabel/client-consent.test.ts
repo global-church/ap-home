@@ -63,7 +63,7 @@ describe('gather-app — its own words', () => {
     expect(orgCreateText(gather, 'explainer', vars, 'SHARED')).toBe(
       'This single approval sets up Grace Church. Your church gets its own listing page on Gather27. Nothing beyond that.',
     );
-    expect(orgCreateText(gather, 'disconnect', vars, 'SHARED')).toBe('You can disconnect Gather27 any time from your Global.Church ID.');
+    expect(orgCreateText(gather, 'disconnect', vars, 'SHARED')).toBe('You can disconnect Gather27 any time from your Great Commission ID.');
     expect(orgCreateText(gather, 'receipt', vars, 'SHARED')).toBe('Your church is set up.');
     for (const k of ['explainer', 'disconnect', 'receipt'] as const) {
       expect(orgCreateText(gather, k, vars, 'SHARED')).not.toMatch(/\bhome\b|chain|custod|Impact|name is claimed|claims its name/i);

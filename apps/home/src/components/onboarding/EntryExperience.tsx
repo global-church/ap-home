@@ -834,7 +834,7 @@ function CredentialFirstStart({ onUseName, onSession, enrollApi, appName, signIn
       <h1 className="onboarding-h1">{enroll && appName ? `Continue to ${appName}` : whitelabel.copy.arrivalTitle}</h1>
       <p className="onboarding-sub">
         {enroll
-          ? 'Sign in, then you’ll return.'
+          ? whitelabel.copy.enrollSub
           : `Sign in or get started. Your ${whitelabel.brand.name} name is how others find your agent — not something you need to remember to get back in.`}
       </p>
       {offers('social') && <SocialConnect onGoogle={onGoogle} onYouVersion={onYouVersion} primary />}
