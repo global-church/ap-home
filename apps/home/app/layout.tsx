@@ -15,16 +15,19 @@ const BRAND = process.env.NEXT_PUBLIC_BRAND_NAME || 'Impact';
 // have their own title (/about) extend the template; the portal keeps the front-door title. Indexing is
 // decided per path: the front door, /about and /llms.txt are indexable; every other route is stamped
 // `X-Robots-Tag: noindex` by next.config from the same list robots.txt disallows.
+// The front-door title; a deployment may name it (Global.Church: "GCID — Great Commission ID"). Unset = as before.
+const SITE_TITLE = process.env.NEXT_PUBLIC_SITE_TITLE || `${BRAND} — your community portal`;
+
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_ORIGIN),
-  title: { default: `${BRAND} — your community portal`, template: `%s · ${BRAND}` },
+  title: { default: SITE_TITLE, template: `%s · ${BRAND}` },
   description: SITE_DESCRIPTION,
   keywords: [...SITE_KEYWORDS],
   applicationName: BRAND,
   alternates: { canonical: '/' },
   robots: { index: true, follow: true, googleBot: { index: true, follow: true, 'max-image-preview': 'large', 'max-snippet': -1 } },
-  openGraph: { type: 'website', siteName: BRAND, title: `${BRAND} — your community portal`, description: SITE_DESCRIPTION, url: '/', locale: 'en_US' },
-  twitter: { card: 'summary_large_image', title: `${BRAND} — your community portal`, description: SITE_DESCRIPTION },
+  openGraph: { type: 'website', siteName: BRAND, title: SITE_TITLE, description: SITE_DESCRIPTION, url: '/', locale: 'en_US' },
+  twitter: { card: 'summary_large_image', title: SITE_TITLE, description: SITE_DESCRIPTION },
   ...(GOOGLE_SITE_VERIFICATION ? { verification: { google: GOOGLE_SITE_VERIFICATION } } : {}),
 };
 
