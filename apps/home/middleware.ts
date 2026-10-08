@@ -27,8 +27,13 @@ export async function middleware(req: NextRequest) {
       res.headers.append('set-cookie', decision.setCookie);
       return res;
     }
-    case 'redirect':
-      return new NextResponse(null, { status: 303, headers: { location: decision.location, 'set-cookie': decision.setCookie } });
+    case 'redirect': {
+      // NextResponse requires an absolute Location ("Invalid URL" on a relative one — found live 2026-10-07).
+      // decision.location is already a same-origin relative path (safeNext), so resolve it against this origin.
+      const res = NextResponse.redirect(new URL(decision.location, req.nextUrl.origin), 303);
+      res.headers.append('set-cookie', decision.setCookie);
+      return res;
+    }
     case 'page':
       return new NextResponse(gatePageHtml(process.env.NEXT_PUBLIC_BRAND_NAME ?? 'Home', decision.wrong, decision.next), {
         status: 401,
