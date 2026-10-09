@@ -10491,7 +10491,7 @@ app.get('/discovery/agent', async (c) => {
 // their mail, and pretending otherwise would forge a From: header. The body says who it is from.
 app.post('/email/send', async (c) => {
   const rawBody = await c.req.text();
-  const body = (() => { try { return JSON.parse(rawBody); } catch { return null; } })() as { session?: string; to?: string; subject?: string; text?: string; html?: string; as?: string } | null;
+  const body = (() => { try { return JSON.parse(rawBody); } catch { return null; } })() as { session?: string; to?: string; subject?: string; text?: string; html?: string; as?: string; replyTo?: string } | null;
   if (!body?.to || !body.text?.trim()) return c.json({ ok: false, error: 'to and text are required' }, 400);
   // TWO CREDENTIALS, one at a time. A PERSON's Home session writes as themselves (or as an organization
   // they steward); the HOME'S SERVER, with no person in the loop — a sign-in code, a verification — writes
@@ -10549,7 +10549,10 @@ app.post('/email/send', async (c) => {
   const subject = (body.subject ?? '').trim() || `A message from ${fromName ?? 'an agent'}`;
   // System mail is sent VERBATIM — a sign-in code with a signature line appended is a stranger's mail.
   const text = system ? body.text.trim() : `${body.text.trim()}\n\n— ${fromName ?? from}, via ${new URL(c.env.ALLOWED_ORIGINS?.split(',')[0] ?? 'https://faithnet.me').host}`;
-  const sent = await sender.send({ to, subject, text, ...(body.html?.trim() ? { html: body.html } : {}) });
+  // Reply-To: SYSTEM mail only (Home's server, under the bridge)  e.g. a relying app's inbox on the host
+  // invites Home sends for it. A person's own mail already replies to them.
+  const replyTo = system && typeof body.replyTo === 'string' && isEmailAddress(body.replyTo.trim().toLowerCase()) ? body.replyTo.trim() : undefined;
+  const sent = await sender.send({ to, subject, text, ...(body.html?.trim() ? { html: body.html } : {}), ...(replyTo ? { replyTo } : {}) } as Parameters<typeof sender.send>[0]);
   if (!sent.ok) return c.json({ ok: false, error: sent.error ?? 'the email did not go', via: sent.via }, 502);
 
   // THEIR OWN COPY, in the thread with that address. Best-effort: the mail HAS gone, and failing the

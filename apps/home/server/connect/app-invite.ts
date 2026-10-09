@@ -47,7 +47,9 @@ export const onRequestPost = async ({ request, env }: FnContext): Promise<Respon
   const appName = client.name ?? clientId;
   const orgName = (body?.name ?? '').trim() || appName;
   const joinUrl = url.toString().slice(0, 500);
-  const sent = await sendEmail(env, inviteEmail(email, joinUrl, orgName, whitelabel.brand.name, appName));
+  // A reply to the invite belongs to the app that invited them (its own inbox), not to Home's no-reply sender.
+  const replyTo = (client as { replyTo?: string }).replyTo;
+  const sent = await sendEmail(env, { ...inviteEmail(email, joinUrl, orgName, whitelabel.brand.name, appName), ...(replyTo ? { replyTo } : {}) });
   if (!sent.ok) return json({ error: `could not send invite: ${sent.error}` }, 502);
   return json({
     ok: true,

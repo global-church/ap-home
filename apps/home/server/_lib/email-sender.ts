@@ -20,6 +20,8 @@ export interface OutboundEmail {
   subject: string;
   html: string;
   text?: string;
+  /** Reply-To — e.g. a relying app's own inbox for the invites Home sends for it. */
+  replyTo?: string;
 }
 
 /** True once a provider is configured — the UI shows "email login/invite available" only when this is set. */
@@ -41,7 +43,7 @@ export async function sendEmail(env: EmailEnv, msg: OutboundEmail, sendAs?: Send
   const a2a = env.A2A_CUSTODY_URL?.trim();
   if (a2a && env.A2A_CUSTODY_BRIDGE_SECRET?.trim()) {
     try {
-      const payload = { to: msg.to, subject: msg.subject, text: msg.text ?? '', ...(msg.html ? { html: msg.html } : {}) };
+      const payload = { to: msg.to, subject: msg.subject, text: msg.text ?? '', ...(msg.html ? { html: msg.html } : {}), ...(msg.replyTo ? { replyTo: msg.replyTo } : {}) };
       const url = `${a2a.replace(/\/$/, '')}/email/send`;
       const r = sendAs
         ? await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...payload, session: sendAs.session, as: sendAs.as }) })
@@ -68,6 +70,7 @@ export async function sendEmail(env: EmailEnv, msg: OutboundEmail, sendAs?: Send
       body: JSON.stringify({
         personalizations: [{ to: [{ email: msg.to }] }],
         from: { email: from },
+        ...(msg.replyTo ? { reply_to: { email: msg.replyTo } } : {}),
         subject: msg.subject,
         content: [
           ...(msg.text ? [{ type: 'text/plain', value: msg.text }] : []),

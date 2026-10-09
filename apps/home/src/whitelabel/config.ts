@@ -393,6 +393,9 @@ const faithImpact: WhiteLabelConfig = {
       // login-grade posture (a relying app does not mint custody). ADR-0011 still holds: the phone
       // is contact-control, and C_sub (KMS), not the phone, is the on-chain custodian.
       socialCustody: process.env.NEXT_PUBLIC_GATHER_SOCIAL_CUSTODY === 'true',
+      // Gather's inbox for replies to the host invites Home sends for it (Gather, 2026-10-09). Server-side only;
+      // set per deployment, so a Home without it sends exactly as before.
+      ...(process.env.GATHER_REPLY_TO?.trim() ? { replyTo: process.env.GATHER_REPLY_TO.trim() } : {}),
       redirect_uris: [
         // faithnet universe (chain 34348) — only present when the deploy sets it; production's list
         // is unchanged. Round-4 D14 made Gather THREE websites, so this is a LIST: set

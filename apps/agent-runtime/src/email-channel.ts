@@ -21,7 +21,7 @@ import {
 export interface EmailEnv {
   /** Cloudflare Email Service binding (`[[send_email]]`, `name = "SEND_EMAIL"`). Sends to ANY address from a
    *  domain onboarded to Email Sending (`wrangler email sending enable <zone>`); `EMAIL_FROM` must be on it. */
-  SEND_EMAIL?: { send(msg: { to: string; from: { email: string; name?: string }; subject: string; text: string; html?: string; headers?: Record<string, string> }): Promise<{ messageId?: string } | void> };
+  SEND_EMAIL?: { send(msg: { to: string; from: { email: string; name?: string }; replyTo?: string; subject: string; text: string; html?: string; headers?: Record<string, string> }): Promise<{ messageId?: string } | void> };
   /** The display name mail goes out under. */
   EMAIL_FROM_NAME?: string;
   SENDGRID_API_KEY?: string;
@@ -47,6 +47,8 @@ export function cloudflareSender(env: EmailEnv): EmailSenderPort {
         const res = await env.SEND_EMAIL!.send({
           to: msg.to,
           from: { email: from, ...(env.EMAIL_FROM_NAME?.trim() ? { name: env.EMAIL_FROM_NAME.trim() } : {}) },
+          // Reply-To is a first-class field on the Email Service binding (a hand-set header is refused).
+          ...((msg as { replyTo?: string }).replyTo ? { replyTo: (msg as { replyTo?: string }).replyTo } : {}),
           subject: msg.subject, text: msg.text,
           ...(msg.html ? { html: msg.html } : {}),
           ...(msg.inReplyTo ? { headers: { 'In-Reply-To': msg.inReplyTo, References: msg.inReplyTo } } : {}),

@@ -106,6 +106,9 @@ export interface RelyingApp {
    *  SELF-CONTAINED demos (e.g. demo-web) that bootstrap their own SA across SIWE/passkey/social —
    *  NOT for true relying apps (demo-org/jp/gs stay login-grade). Default false/undefined. */
   socialCustody?: boolean;
+  /** Where a reply to mail Home sends FOR this app (its host invites) should go — the app's own inbox, not the
+   *  Home's no-reply sender. Absent = no Reply-To, as before. */
+  replyTo?: string;
   /** When true, this relying app cannot authorize a nameless person Smart Agent. Empty `agent_name`
    *  requests must collect/claim a unique Impact name before granting. */
   requireNamedAgent?: boolean;
