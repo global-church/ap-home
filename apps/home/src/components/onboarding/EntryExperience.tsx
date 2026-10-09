@@ -42,7 +42,7 @@ import { NewMemberSetup } from './NewMemberSetup';
 import { isNewHomeMoment, newMemberPlan, planIsEmpty, type NewMemberPlan } from '../../lib/new-member';
 import { displayAppDomain, displayAppName } from './org-chooser-label';
 import { parseEnrollReq } from './useEnrollReq';
-import { clientCopy, clientProgressText, orgCreateText, withClientConsent } from '../../whitelabel/client-consent';
+import { clientCopy, clientOrgName, clientProgressText, hidesIdentifiers, orgCreateText, withClientConsent } from '../../whitelabel/client-consent';
 
 interface NameInfo { exists?: boolean; agent?: Address; deployed?: boolean; hasEoa?: boolean; hasPasskey?: boolean; connectionKind?: string | null; connectionAddress?: string | null; passkeySigningAvailable?: boolean | null }
 /** Human label for the owner-published connection kind (spec 280) — guides which button to use. */
@@ -1267,6 +1267,9 @@ function OrgConsent({ personAgent, api }: { personAgent: Address; api: ReturnTyp
   const orgAppDomain = displayAppDomain(api.host);
   // The person's chooser pick wins over the URL's suggestion.
   const orgBase = choice?.orgName ?? api.enroll?.orgBase ?? '';
+  // What the person READS: a chosen org's handle humanized for a client that never shows one (Gather27);
+  // `orgBase` itself, unchanged, is what the ceremony uses.
+  const orgShown = clientOrgName(orgClient, orgBase);
   const existingOrg = choice?.existingOrg ?? api.enroll?.existingOrg;
   // spec 256 — the org inherits the member's ACTUAL custody. A Google member's org is deployed by
   // their KMS C_sub server-side (zero device prompts); passkey/wallet members sign on device. The
@@ -1350,6 +1353,7 @@ function OrgConsent({ personAgent, api }: { personAgent: Address; api: ReturnTyp
           appName={orgAppName}
           purpose={api.enroll?.purpose}
           defaultName={api.enroll?.orgBase}
+          hideHandles={hidesIdentifiers(orgClient)}
           onChoose={(c) => { setChoice(c); setPhase('consent'); }}
           onDecline={api.denyEnroll}
         />
@@ -1369,7 +1373,7 @@ function OrgConsent({ personAgent, api }: { personAgent: Address; api: ReturnTyp
     );
   }
   // Spec 255 W4.1 — the org-create "connected" receipt: what the single approval accomplished.
-  if (phase === 'connected') return <Shell><BrandShield size={56} /><h1 className="onboarding-h1">{orgBase} is ready</h1><ReceiptCard title={`${orgBase} is ready`} body={existingOrg ? `${orgAppName} can now read what it posts — the organization stays in your control.` : isWorkspace ? `The organization and its workspace are started, their names are claimed, and ${orgAppName} can act as this workspace — revocably.` : orgCreateText(orgClient, 'receipt', { app: orgAppName, org: orgBase }, `Its home is started, its name is claimed, and ${orgAppName} can now read what it posts.`)} /><p className="onboarding-sub">Returning you to {orgAppName}…</p><WorkingBar /></Shell>;
+  if (phase === 'connected') return <Shell><BrandShield size={56} /><h1 className="onboarding-h1">{orgShown} is ready</h1><ReceiptCard title={`${orgShown} is ready`} body={existingOrg ? `${orgAppName} can now read what it posts — the organization stays in your control.` : isWorkspace ? `The organization and its workspace are started, their names are claimed, and ${orgAppName} can act as this workspace — revocably.` : orgCreateText(orgClient, 'receipt', { app: orgAppName, org: orgShown }, `Its home is started, its name is claimed, and ${orgAppName} can now read what it posts.`)} /><p className="onboarding-sub">Returning you to {orgAppName}…</p><WorkingBar /></Shell>;
   if (phase === 'error') return <Shell><h1 className="onboarding-h1">Couldn&apos;t finish</h1><p className="onboarding-hint taken">{err}</p><button className="btn-primary" onClick={() => setPhase(preselected ? 'consent' : 'choose')}>Try again</button></Shell>;
   return (
     <Shell>
@@ -1377,18 +1381,18 @@ function OrgConsent({ personAgent, api }: { personAgent: Address; api: ReturnTyp
           passkey-specific — never says "passkey"), so it's correct for ALL org-create credentials
           including Google. */}
       <div className="securing-explainer pre-prompt-explainer">
-        <div className="securing-explainer-title">One tap — approve {existingOrg ? `connecting ${orgBase}` : `creating ${orgBase}`}</div>
+        <div className="securing-explainer-title">One tap — approve {existingOrg ? `connecting ${orgShown}` : `creating ${orgShown}`}</div>
         <p>
           {existingOrg
-            ? `This single approval lets ${orgAppName} read what ${orgBase} posts. Nothing beyond that — no new organization is created.`
+            ? `This single approval lets ${orgAppName} read what ${orgShown} posts. Nothing beyond that — no new organization is created.`
             : isWorkspace
               ? `This single approval starts an organization under your name and the workspace it governs, claims both names, and lets ${orgAppName} act as that workspace. Nothing beyond that.`
-              : orgCreateText(orgClient, 'explainer', { app: orgAppName, org: orgBase }, `This single approval starts the organization, claims its name, and lets ${orgAppName} read what it posts. Nothing beyond that.`)}
+              : orgCreateText(orgClient, 'explainer', { app: orgAppName, org: orgShown }, `This single approval starts the organization, claims its name, and lets ${orgAppName} read what it posts. Nothing beyond that.`)}
         </p>
-        <p className="securing-wait">{orgCreateText(orgClient, 'disconnect', { app: orgAppName, org: orgBase }, `You can disconnect ${orgAppName} at any time from your Impact home.`)}</p>
+        <p className="securing-wait">{orgCreateText(orgClient, 'disconnect', { app: orgAppName, org: orgShown }, `You can disconnect ${orgAppName} at any time from your Impact home.`)}</p>
       </div>
       <ConsentSheet
-        title={existingOrg ? `Connect ${orgBase} to ${orgAppName}` : isWorkspace ? `Create ${orgBase} and its workspace` : ownWording ? `Create ${orgBase}` : `Create ${orgBase} in the ${whitelabel.brand.community}`}
+        title={existingOrg ? `Connect ${orgShown} to ${orgAppName}` : isWorkspace ? `Create ${orgShown} and its workspace` : ownWording ? `Create ${orgShown}` : `Create ${orgShown} in the ${whitelabel.brand.community}`}
         appName={orgAppName}
         appDomain={orgAppDomain}
         appDescription={orgClient?.description}

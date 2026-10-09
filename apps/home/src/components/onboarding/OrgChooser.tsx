@@ -55,6 +55,7 @@ export function OrgChooser({
   appName,
   purpose,
   defaultName,
+  hideHandles = false,
   onChoose,
   onDecline,
 }: {
@@ -71,6 +72,8 @@ export function OrgChooser({
    *  first-host path). With eligible orgs it prefills create-new, so picking the existing
    *  org — instead of silently minting a duplicate — is one visible tap. */
   defaultName?: string;
+  /** Never show the org's handle (`<slug>.impact`) — for a client whose people never see one (`consent.hideIdentifiers`). */
+  hideHandles?: boolean;
   onChoose: (choice: OrgChoice) => void;
   onDecline: () => void;
 }) {
@@ -197,7 +200,7 @@ export function OrgChooser({
           it, select it there instead of creating it again.
         </p>
       )}
-      {selected === 'new' && slug && slug !== name.trim() && (
+      {!hideHandles && selected === 'new' && slug && slug !== name.trim() && (
         <p className="onboarding-hint">Its web address will be <strong>{slug}.impact</strong>.</p>
       )}
 

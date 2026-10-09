@@ -40,7 +40,7 @@ import { ConsentSheet } from '../shared/ConsentSheet';
 import { displayAppDomain, displayAppName } from './org-chooser-label';
 import { NewMemberSetup } from './NewMemberSetup';
 import { coinMandateLeg, grantsCoinAtConnect, newMemberPlan, planIsEmpty, withCurrencyConsent, withEmailClaimConsent, withProfileNameConsent } from '../../lib/new-member';
-import { withClientConsent } from '../../whitelabel/client-consent';
+import { hidesIdentifiers, withClientConsent } from '../../whitelabel/client-consent';
 
 export type JourneyVariant = 'enroll-new' | 'enroll-existing' | 'self-serve';
 
@@ -717,7 +717,9 @@ export function OnboardingJourney({
         <OnboardingProgress total={3} current={3} label="Give permission" />
         <ConsentSheet
           title={fmt(c.authorizeStepTitle, { app: appName })}
-          signedInAs={name?.trim() || undefined}
+          // A client that never shows a handle (Gather27) names nobody here; this path has no verified email.
+          signedInAs={hidesIdentifiers(relyingApp) ? undefined : name?.trim() || undefined}
+          signedInBare={hidesIdentifiers(relyingApp)}
           appName={appName}
           appDomain={appDomain}
           appLogo={relyingApp?.logo}

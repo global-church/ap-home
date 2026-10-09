@@ -29,7 +29,8 @@ import { RequiredNameGate } from './RequiredNameGate';
 import { NewMemberSetup } from './NewMemberSetup';
 import { coinMandateLeg, grantsCoinAtConnect, newMemberPlan, planIsEmpty, withCurrencyConsent, withEmailClaimConsent, withProfileNameConsent } from '../../lib/new-member';
 import { displayAppDomain, displayAppName } from './org-chooser-label';
-import { withClientConsent } from '../../whitelabel/client-consent';
+import { hidesIdentifiers, signedInLabel, withClientConsent } from '../../whitelabel/client-consent';
+import { verifiedEmailFor } from '../../lib/verified-email';
 import {
   clearPendingEnroll,
   enrollResumeHref,
@@ -374,7 +375,13 @@ export function GoogleEnrollResume() {
       <div className="onboarding-card wide">
         <ConsentSheet
           title={fmt(c.authorizeStepTitle, { app: appName })}
-          signedInAs={home?.name?.trim() || (home?.address ? `${home.address.slice(0, 6)}…${home.address.slice(-4)}` : '')}
+          signedInAs={
+            // A client that never shows an address or handle gets the email verified in this window, or nothing.
+            hidesIdentifiers(relyingApp)
+              ? signedInLabel(relyingApp, { email: verifiedEmailFor(home?.address) })
+              : home?.name?.trim() || (home?.address ? `${home.address.slice(0, 6)}…${home.address.slice(-4)}` : '')
+          }
+          signedInBare={hidesIdentifiers(relyingApp) && !!home}
           appName={appName}
           appDomain={appDomain}
           appLogo={relyingApp?.logo}

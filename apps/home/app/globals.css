@@ -1897,3 +1897,38 @@ input:not([type=checkbox]):not([type=radio]), select, textarea { border-color: v
 .published-body ul, .published-body ol { margin: 0 0 1em; padding-left: 1.4rem; }
 .published-body pre { overflow: auto; padding: .7rem; background: var(--color-surface-sunken); border-radius: 8px; font-size: .85rem; }
 .published-body img { max-width: 100%; }
+/* ── A relying app's own look for its sign-in window (whitelabel RelyingApp.theme) ──
+   ClientThemeScope wraps that window's screens in `.client-theme` and sets the client's variables on it —
+   the Home's own tokens above, re-valued, plus the `--theme-*` shape tokens read here. No layout box
+   (display: contents), so nothing moves; only what the variables and these few shape rules say. A window
+   without a registered theme never gets the class, so none of this applies to it. */
+.client-theme { display: contents; font-family: var(--font-brand-stack); color: var(--color-text-body); }
+.client-theme .onboarding-screen, .client-theme .fullbleed-spinner { background: var(--color-surface); }
+.client-theme .onboarding-card { border-radius: var(--theme-card-radius, var(--radius-24)); box-shadow: var(--theme-card-shadow, var(--shadow-card)); }
+.client-theme .onboarding-h1, .client-theme .consent-title, .client-theme .securing-explainer-title {
+  font-family: var(--theme-heading-font, inherit); font-style: var(--theme-heading-style, normal);
+  font-weight: var(--theme-heading-weight, 700); letter-spacing: var(--theme-heading-tracking, -.02em); line-height: 1.15;
+}
+.client-theme .onboarding-h1 { font-size: var(--theme-h1-size, 1.45rem); }
+.client-theme .onboarding-card.enroll-compact .onboarding-h1 { font-size: var(--theme-h1-size, 1.28rem); }
+.client-theme .consent-title { font-size: var(--theme-title-size, 1.35rem); }
+.client-theme .consent-app-name { font-weight: 700; letter-spacing: -.01em; }
+.client-theme .btn, .client-theme .btn-primary {
+  border-radius: var(--theme-button-radius, 8px); background: var(--color-action); color: var(--color-action-fg);
+  border: 1px solid transparent; font-weight: 600; min-height: 44px; padding: .7rem 1.4rem; filter: none;
+}
+.client-theme .btn:hover:not(:disabled), .client-theme .btn-primary:hover:not(:disabled) { background: var(--theme-button-hover, var(--color-action)); filter: none; }
+.client-theme .btn-ghost, .client-theme a.btn-ghost {
+  border-radius: var(--theme-button-radius, 8px); background: transparent; color: var(--color-text-primary);
+  border: 1px solid currentColor; min-height: 44px; padding: .65rem 1.4rem;
+}
+.client-theme .btn-ghost:hover:not(:disabled), .client-theme a.btn-ghost:hover {
+  background: var(--theme-button-hover, var(--color-surface-sunken)); color: var(--color-action-fg); border-color: var(--theme-button-hover, currentColor);
+}
+.client-theme .btn-ghost[aria-pressed="true"] { background: var(--color-surface-sunken); color: var(--color-text-primary); border-color: var(--color-text-primary); }
+.client-theme input:not([type=checkbox]):not([type=radio]) {
+  border-radius: var(--theme-input-radius, 8px); background: var(--color-surface-raised); min-height: 44px;
+  padding-inline: 1.1rem; font-size: .95rem; border-color: var(--color-border-strong);
+}
+.client-theme input:focus { border-color: var(--color-action); box-shadow: 0 0 0 3px var(--theme-focus-ring, rgba(245,158,11,.18)); }
+.client-theme .org-chooser-row { border-radius: var(--theme-card-radius, 12px); }

@@ -486,6 +486,77 @@ const faithImpact: WhiteLabelConfig = {
           'One approval — Gather27 never holds its keys.': 'This can take a moment.',
           'The listing will live here — Gather27 only gets a read grant.': 'Your listing will live here.',
         },
+        // A host knows themselves by their email, never by an address or a `.impact` handle.
+        hideIdentifiers: true,
+      },
+      // Gather's OWN look for its sign-in window (2026-10-09): a host who clicked "Sign in" on Gather27
+      // should not land on a page that looks like another product. Values are Gather's brand tokens
+      // (engage apps/gather27-web/src/theme.ts HOUSE_CSS — Figma "Gather27 → Style Guide"): cream paper,
+      // near-black ink, Bright Blue pill buttons, 16px cards, Plus Jakarta Sans with Instrument Serif
+      // italic headings. Scoped to this client's window only (ClientThemeScope); nothing else moves.
+      theme: {
+        fontHref: 'https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@1&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap',
+        vars: {
+          // Surfaces — Gather --paper (Neutral/100 92% + Neutral/500), --card (Neutral/100), --line (Neutral/500).
+          '--color-surface': '#FDF8EF',
+          '--color-surface-raised': '#FFFAF0',
+          '--color-surface-sunken': '#F4EFE6',
+          '--color-border': '#EBE7DE',
+          '--color-border-strong': '#D6D0C4',
+          // Ink — Neutral/900, Neutral/700, and Gather's --ink-faint (Neutral/700 72% on Neutral/100: 4.7:1 on the card).
+          '--color-text-primary': '#1B1B1B',
+          '--color-text-body': '#3B3A39',
+          '--color-text-muted': '#72706C',
+          '--color-text-faint': '#8C8984',
+          // The accent — Bright Blue with cream text (5.5:1), Dark Blue on hover (Gather .btn).
+          '--color-action': '#2A5ED8',
+          '--color-action-fg': '#FFFAF0',
+          '--color-focus': '#2A5ED8',
+          '--c-primary-light': '#2A5ED8',
+          '--color-accent': '#2A5ED8',
+          '--color-accent-soft': '#EEF3FC',
+          '--accent': '#2A5ED8',
+          '--accent-soft': '#EEF3FC',
+          // The Home's amber scale, re-pointed at Gather's blues (progress fill, logo badge, links).
+          '--color-amber-50': '#EEF3FC',
+          '--color-amber-100': '#DCE6F9',
+          '--color-amber-400': '#6F93E6',
+          '--color-amber-500': '#2A5ED8',
+          '--color-amber-600': '#2A5ED8',
+          '--color-amber-700': '#1F4BB3',
+          // The legacy aliases resolve at :root, so they are re-pointed here too (spinner, value steps).
+          '--c-primary': '#2A5ED8',
+          '--c-primary-hover': '#12161D',
+          '--c-g900': '#1B1B1B',
+          '--c-g700': '#3B3A39',
+          '--c-g500': '#72706C',
+          '--c-g200': '#EBE7DE',
+          // "Done" is Dark Blue in Gather (the brand has no green): receipts and consent ticks.
+          '--color-sage-50': '#F1F5FB',
+          '--color-sage-100': '#DCE6F9',
+          '--color-sage-500': '#2A5ED8',
+          '--color-sage-700': '#12161D',
+          // The shield mark, tinted Bright Blue → Dark Blue.
+          '--shield-stop-a': '#5B86E5',
+          '--shield-stop-b': '#2A5ED8',
+          '--shield-stop-c': '#12161D',
+          // Type — Plus Jakarta Sans everywhere, Instrument Serif italic for the headings.
+          '--font-brand-stack': '"Plus Jakarta Sans", system-ui, -apple-system, "Segoe UI", sans-serif',
+          '--theme-heading-font': '"Instrument Serif", Georgia, serif',
+          '--theme-heading-style': 'italic',
+          '--theme-heading-weight': '400',
+          '--theme-heading-tracking': '0',
+          '--theme-h1-size': '2rem',
+          '--theme-title-size': '1.85rem',
+          // Shapes — Gather --r-pill (200px), --r-card (16px); no drop shadow on the card.
+          '--theme-button-radius': '200px',
+          '--theme-button-hover': '#12161D',
+          '--theme-input-radius': '200px',
+          '--theme-input-pad-x': '1.1rem',
+          '--theme-card-radius': '16px',
+          '--theme-card-shadow': 'none',
+          '--theme-focus-ring': 'rgba(42, 94, 216, .18)',
+        },
       },
     },
     // skills-corpus — the SKILL.md ceremony/admin surface (owner claims a skillset).
@@ -1219,4 +1290,4 @@ export function fmt(template: string, vars: Record<string, string | undefined> =
   return template.replace(/\{(\w+)\}/g, (m, k: string) => vars[k] ?? m);
 }
 
-export type { WhiteLabelConfig, WhiteLabelCopy, RelyingApp, ManageableAgent, DelegationTemplate, NewMemberOnboarding, MemberCurrency } from './schema';
+export type { WhiteLabelConfig, WhiteLabelCopy, RelyingApp, ClientTheme, ManageableAgent, DelegationTemplate, NewMemberOnboarding, MemberCurrency } from './schema';

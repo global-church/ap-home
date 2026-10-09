@@ -7,9 +7,26 @@
 // says nothing, so an app without `consent` renders byte-for-byte as before (client-consent.test.ts
 // proves that over the whole registry). Presentation only: the caveats live in the template and the
 // contract; nothing here changes what a grant can do.
-import { fmt, whitelabel, type RelyingApp, type WhiteLabelCopy } from './config';
+import { fmt, whitelabel, type ClientTheme, type RelyingApp, type WhiteLabelCopy } from './config';
+import { humanizeOrgName } from '../components/onboarding/org-chooser-label';
 
 type ConsentClient = Pick<RelyingApp, 'consent'> | null | undefined;
+
+/** True for a client that asked never to show the person an address, handle or `.impact` name. */
+export function hidesIdentifiers(app: ConsentClient): boolean {
+  return app?.consent?.hideIdentifiers === true;
+}
+
+/** A 0x address (full or shortened) or a dotted handle (`grace.impact`, `ana.me`, a host). */
+const IDENTIFIER = /0x[0-9a-f]{4,}|\b[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*\.[a-z][a-z0-9-]*\b/i;
+
+/** Does this text name an address or a handle? */
+export function namesIdentifier(text: string): boolean {
+  return IDENTIFIER.test(text);
+}
+
+/** What a progress line becomes, for a client that hides identifiers, when it would have named one. */
+export const PLAIN_PROGRESS = 'Setting things up…';
 
 /**
  * The can/cannot to show for `templateId`, preferring the client's own lines.
@@ -44,20 +61,45 @@ export function clientProgressText(app: ConsentClient, text: string): string;
 export function clientProgressText(app: ConsentClient, text: string | undefined): string | undefined;
 export function clientProgressText(app: ConsentClient, text: string | undefined): string | undefined {
   if (text === undefined) return text;
-  return app?.consent?.progressText?.[text] ?? text;
+  const own = app?.consent?.progressText?.[text] ?? text;
+  // A shared step that names a handle or an address ("Claiming grace-church.impact…") says something
+  // plain instead, for a client whose people never see either.
+  return hidesIdentifiers(app) && namesIdentifier(own) ? PLAIN_PROGRESS : own;
 }
 
 /**
  * Who "Signed in as" names. A client that asked for `'email'` gets the member's verified email when one
  * was read; otherwise (and for every other client) the existing rule: name, then the short address.
+ *
+ * A client that hides identifiers (`consent.hideIdentifiers`) gets the email or NOTHING — never the
+ * handle, never `0x…`. The empty string is the caller's cue to say just "Signed in" (ConsentSheet
+ * `signedInBare`).
  */
 export function signedInLabel(
   app: ConsentClient,
   who: { email?: string; name?: string; address?: string },
 ): string {
-  const email = app?.consent?.signedInAs === 'email' ? (who.email ?? '').trim() : '';
+  const wantsEmail = app?.consent?.signedInAs === 'email' || hidesIdentifiers(app);
+  const email = wantsEmail ? (who.email ?? '').trim() : '';
+  if (hidesIdentifiers(app)) return email.includes('@') && !/0x[0-9a-f]{4,}/i.test(email) ? email : '';
   if (email) return email;
   return who.name?.trim() || (who.address ? `${who.address.slice(0, 6)}…${who.address.slice(-4)}` : '');
+}
+
+/** An organization's name as this client's people should read it: a handle (`grace-church.impact`)
+ *  humanized for a client that hides identifiers; exactly as given for everyone else. */
+export function clientOrgName(app: ConsentClient, name: string): string {
+  if (!hidesIdentifiers(app) || !name) return name;
+  return namesIdentifier(name) || /^[a-z0-9]+(?:-[a-z0-9]+)+$/.test(name) ? humanizeOrgName(name.replace(/\.[a-z][a-z0-9-]*$/i, '')) : name;
+}
+
+/** This client's own look for its sign-in window, or undefined (the Home's own look). */
+export function clientTheme(app: Pick<RelyingApp, 'theme'> | null | undefined): ClientTheme | undefined {
+  const t = app?.theme;
+  if (!t) return undefined;
+  // Only custom properties ever reach the inline style — a stray `color` key must not restyle the scope.
+  const vars = Object.fromEntries(Object.entries(t.vars).filter(([k]) => k.startsWith('--')));
+  return { ...t, vars };
 }
 
 /** The account-switch button on the recognized consent screen — same action for every client, the

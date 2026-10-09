@@ -13,6 +13,15 @@ import { GoogleEnrollResume, readPendingEnroll } from '../../src/components/onbo
 import { HomeResolvedView } from '../../src/components/onboarding/HomeResolvedView';
 import { parseEnrollReq } from '../../src/components/onboarding/useEnrollReq';
 import { enrollResumeHref, isConnectPopup } from '../../src/components/onboarding/pending-enroll';
+import { ClientThemeScope } from '../../src/components/onboarding/ClientThemeScope';
+import { whitelabel } from '../../src/whitelabel/config';
+import { clientTheme } from '../../src/whitelabel/client-consent';
+
+/** The registered look of the CURATED client `aud`, if it has one. Member-registered clients are never
+ *  consulted: they cannot carry a theme (relying-clients.ts rebuilds them field by field). */
+function themeFor(aud: string | undefined) {
+  return aud ? clientTheme(whitelabel.relyingApps.find((a) => a.client_id === aud)) : undefined;
+}
 
 function FullBleedSpinner() {
   return (
@@ -124,17 +133,27 @@ function Gate({ children }: { children: ReactNode }) {
   const resumedEnroll = useRef(false);
 
   let content: ReactNode;
+  // The relying app whose sign-in window this is, when it is one — its registered look (if any) wraps
+  // the screens below. Only the enrollment branches set it: the portal itself always looks like the Home.
+  let windowClient: string | undefined;
   if (!mounted) content = <FullBleedSpinner />; // stable SSR/first-paint (no authed content server-side)
-  else if (enroll) content = <EntryExperience mode="enroll" />;
+  else if (enroll) {
+    windowClient = parseEnrollReq()?.aud;
+    content = <EntryExperience mode="enroll" />;
+  }
   else if (phase === 'restoring') content = <FullBleedSpinner />;
   else if (phase === 'anon') content = <EntryExperience mode="entry" />;
   // A Google member returned mid relying-app enrollment — finish securing + granting + deliver the
   // code back to the app (the enroll request was stashed before the Google redirect; spec 235).
-  else if (isOidcHome && pendingEnroll && (connectPopup || session?.fresh)) content = <GoogleEnrollResume />;
+  else if (isOidcHome && pendingEnroll && (connectPopup || session?.fresh)) {
+    windowClient = readPendingEnroll()?.enroll.aud;
+    content = <GoogleEnrollResume />;
+  }
   // Email/passkey in the Gather popup landed on `/` after creating the home. Put authorize
   // back on the URL so RecognizedEnroll asks for Gather27 — do not dump the first-party portal.
   else if (connectPopup && pendingEnroll && phase === 'authed') {
     const pending = readPendingEnroll();
+    windowClient = pending?.enroll.aud;
     if (pending && !resumedEnroll.current) {
       resumedEnroll.current = true;
       window.location.replace(enrollResumeHref(pending));
@@ -178,7 +197,7 @@ function Gate({ children }: { children: ReactNode }) {
           <button className="notice-banner-close" onClick={clearNotice} aria-label="Dismiss">×</button>
         </div>
       )}
-      {content}
+      <ClientThemeScope theme={themeFor(windowClient)}>{content}</ClientThemeScope>
     </>
   );
 }

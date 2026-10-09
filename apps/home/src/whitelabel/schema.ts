@@ -84,6 +84,9 @@ export interface RelyingApp {
   /** OPTIONAL — this client's OWN consent wording, in place of the shared defaults. See
    *  {@link ClientConsentCopy}. Absent means the shared `delegationTemplates` / `copy`, unchanged. */
   consent?: ClientConsentCopy;
+  /** OPTIONAL — this client's OWN look for its sign-in window. See {@link ClientTheme}. Absent means
+   *  the Home's own look, unchanged. */
+  theme?: ClientTheme;
   /** The CANONICAL relying-site delegate SA address for this client (ADR-0019). This is the
    *  ONLY delegate the broker will mint a grant for; the URL-supplied `delegate` is
    *  treated as untrusted hint and MUST match this. Address format: 0x-prefixed 20-byte hex.
@@ -346,6 +349,31 @@ export interface ClientConsentCopy {
   /** Exact-string replacements for ceremony progress labels and hints (`CeremonyProgress`), e.g. a
    *  shared "Confirming it on the chain…" an app's people should never see. Unlisted text is unchanged. */
   progressText?: Record<string, string>;
+  /** Never show the person an address, a handle or a `.impact` name on this client's screens: "Signed
+   *  in as" names only the verified email (or just says "Signed in"), progress lines that would name a
+   *  handle are replaced with a plain one, and org handles are humanized. For an app whose people only
+   *  ever know themselves by their email (Gather27). */
+  hideIdentifiers?: boolean;
+}
+
+/**
+ * A relying app's OWN look for the sign-in window it opens on this Home (per CLIENT, never per
+ * deployment) — so a person who clicked "Sign in" on the app does not land on a page that looks
+ * like somebody else's.
+ *
+ * PRESENTATION ONLY, and scoped: the vars are set on a wrapper around that window's onboarding
+ * screens (portal Gate → `ClientThemeScope`), so they override the Home's own CSS variables
+ * (globals.css `:root`) for those screens and nothing else. The `--theme-*` vars feed the few shape
+ * rules under `.client-theme` in globals.css (pill buttons, heading face, card radius). A client
+ * without this renders exactly as before.
+ */
+export interface ClientTheme {
+  /** A Google Fonts stylesheet URL, loaded only while the theme is active. */
+  fontHref?: string;
+  /** CSS custom properties (each key starts with `--`) set on the scope. */
+  vars: Record<string, string>;
+  /** An extra class on the scope, for a client that needs a hook of its own. */
+  className?: string;
 }
 
 /** An agent kind the Portal lets the user manage. Person is live; others preview. */

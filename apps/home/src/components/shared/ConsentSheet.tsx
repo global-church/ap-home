@@ -17,6 +17,7 @@ export interface ConsentTemplate {
 export function ConsentSheet({
   title,
   signedInAs,
+  signedInBare = false,
   appName,
   appDomain,
   appLogo,
@@ -31,6 +32,9 @@ export function ConsentSheet({
   title: string;
   /** Who is authorizing — never "your home" when we have a name or address. */
   signedInAs?: string;
+  /** With no `signedInAs`, still say "Signed in" — naming nobody. For a client that never shows an
+   *  address or handle (`consent.hideIdentifiers`) while its email is not known. */
+  signedInBare?: boolean;
   appName: string;
   appDomain: string;
   appLogo?: string;
@@ -57,11 +61,13 @@ export function ConsentSheet({
   const showDomain = Boolean(politeDomain) && politeDomain.toLowerCase() !== politeName.toLowerCase();
   return (
     <div className="consent-sheet">
-      {session && (
+      {session ? (
         <p className="consent-session">
           Signed in as <strong>{session}</strong>
         </p>
-      )}
+      ) : signedInBare ? (
+        <p className="consent-session">Signed in</p>
+      ) : null}
 
       <div className="consent-app">
         {appLogo ? (

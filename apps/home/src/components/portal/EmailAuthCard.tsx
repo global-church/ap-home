@@ -27,6 +27,7 @@ import { secureHomeNoName, activateVault, signHashFor } from '../../home/onboard
 import { addPasskeyCredential, claimName, fetchProfile } from '../../connect-client';
 import { CENTRAL_AUTH_DOMAIN, nameLabel } from '../../lib/domain';
 import { seedImpactProfileFields } from '../../profile-store';
+import { rememberVerifiedEmail } from '../../lib/verified-email';
 import type { Address } from '@agenticprimitives/types';
 import { whitelabel } from '../../whitelabel/config';
 
@@ -88,12 +89,16 @@ export function EmailAuthCard({ onLinked, busyNote = 'Securing your home…' }: 
   };
 
   /** Open the session + seed the verified email (the shared tail of every issued path). */
-  const finishSignIn = async (token: string) => {
+  const finishSignIn = async (token: string, knownAddr?: string) => {
+    // Remember it for this window BEFORE the session opens (opening it re-renders the window into the
+    // consent screen, which reads it to say "Signed in as <email>" — lib/verified-email.ts).
+    rememberVerifiedEmail(knownAddr, email);
     const p = await openSession(token, 'email', false);
     onLinked?.(email.trim().toLowerCase());
     // Metadata-tiers doctrine: the VERIFIED email is tier-1 PII — seed the private vault profile
     // (fill-only-empty, best-effort; the member edits/removes it on /profile anytime).
     const addr = p?.agent?.split(':').pop();
+    if (addr) rememberVerifiedEmail(addr, email);
     if (addr) void seedImpactProfileFields(addr as `0x${string}`, { email: email.trim().toLowerCase() });
   };
 
@@ -116,7 +121,7 @@ export function EmailAuthCard({ onLinked, busyNote = 'Securing your home…' }: 
       setStep('passkey-offer');
       return;
     }
-    await finishSignIn(token);
+    await finishSignIn(token, addr);
   };
 
   /** Passkey-offer action — ONE device prompt creates the key; the email KMS custodian signs the
@@ -131,7 +136,7 @@ export function EmailAuthCard({ onLinked, busyNote = 'Securing your home…' }: 
       const res = await addPasskeyCredential(pkAgent as Address, authorize, (s) => setNote(s));
       if (!res.ok) throw new Error(res.error);
       setNote('Passkey ready — next time this device signs you in with a tap.');
-      await finishSignIn(pkToken);
+      await finishSignIn(pkToken, pkAgent);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally { setBusy(false); }
@@ -141,7 +146,7 @@ export function EmailAuthCard({ onLinked, busyNote = 'Securing your home…' }: 
     if (!pkToken) return;
     setBusy(true); setErr(null);
     try {
-      await finishSignIn(pkToken);
+      await finishSignIn(pkToken, pkAgent);
     } catch (e) { setErr(e instanceof Error ? e.message : String(e)); setBusy(false); }
   };
 
@@ -269,7 +274,7 @@ export function EmailAuthCard({ onLinked, busyNote = 'Securing your home…' }: 
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter' && email.trim()) void start(); }}
-            style={{ flex: 1, minWidth: 200, padding: '.5rem .7rem', border: '1px solid var(--color-border-strong)', borderRadius: 8 }}
+            style={{ flex: 1, minWidth: 200, padding: '.5rem var(--theme-input-pad-x, .7rem)', border: '1px solid var(--color-border-strong)', borderRadius: 'var(--theme-input-radius, 8px)' }}
           />
           <button className="btn" data-testid="email-auth-continue" disabled={busy || !email.trim()} onClick={() => void start()}>
             {busy ? <><span className="spinner" aria-hidden /> Sending…</> : session ? 'Add email' : 'Continue'}
@@ -285,7 +290,7 @@ export function EmailAuthCard({ onLinked, busyNote = 'Securing your home…' }: 
             onChange={(e) => setOtp(e.target.value.replace(/\D/g, '').slice(0, 6))}
             onKeyDown={(e) => { if (e.key === 'Enter' && otp.length === 6) void verify(); }}
             autoFocus
-            style={{ width: 130, padding: '.5rem .7rem', border: '1px solid var(--color-border-strong)', borderRadius: 8, letterSpacing: '2px' }}
+            style={{ width: 130, padding: '.5rem var(--theme-input-pad-x, .7rem)', border: '1px solid var(--color-border-strong)', borderRadius: 'var(--theme-input-radius, 8px)', letterSpacing: '2px' }}
           />
           <button className="btn" data-testid="email-auth-verify" disabled={busy || otp.length !== 6} onClick={() => void verify()}>
             {busy ? <><span className="spinner" aria-hidden /> Checking…</> : 'Verify'}

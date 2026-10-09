@@ -53,7 +53,8 @@ import { knownRelyingClient } from '../../lib/relying-clients';
 import { agentClassOf } from '../../lib/agent-class';
 import { withMissionRegistry } from '../../lib/mission-registry';
 import { profileForConnect } from '../../lib/connect-profile-name';
-import { clientProgressText, signedInLabel, switchAccountLabel, withClientConsent } from '../../whitelabel/client-consent';
+import { clientOrgName, clientProgressText, hidesIdentifiers, signedInLabel, switchAccountLabel, withClientConsent } from '../../whitelabel/client-consent';
+import { verifiedEmailFor } from '../../lib/verified-email';
 
 /** The kinds of agent that ARE an organization holding its own members — where a team-scoped role can be offered. A
  *  workspace is not one (a service, with no members): its people belong to the organization that governs it. */
@@ -133,12 +134,17 @@ export function RecognizedEnroll({ api, onUnrecognized }: { api: EnrollApi; onUn
   // A client that registered `consent.signedInAs: 'email'` (Gather27 — email is its only way in) names
   // the person by the address they signed in with rather than `0x6a25…f058`. Read from their OWN vault
   // over their own session (profileForConnect: best-effort, 5 s cap); no email → the usual rule.
+  // The email verified a moment ago in THIS window (the code step, lib/verified-email.ts) is used first —
+  // it needs no round trip, so the line never falls back to an address while the profile read runs.
   const [signedInEmail, setSignedInEmail] = useState('');
-  const wantsEmailLabel = relyingApp?.consent?.signedInAs === 'email';
+  const hideIds = hidesIdentifiers(relyingApp);
+  const wantsEmailLabel = relyingApp?.consent?.signedInAs === 'email' || hideIds;
   useEffect(() => {
     if (!wantsEmailLabel || !home?.address) return;
+    const known = verifiedEmailFor(home.address);
+    if (known) { setSignedInEmail(known); return; }
     let live = true;
-    void profileForConnect().then((p) => { if (live) setSignedInEmail(p.email); });
+    void profileForConnect().then((p) => { if (live && p.email) setSignedInEmail(p.email); });
     return () => { live = false; };
   }, [wantsEmailLabel, home?.address]);
   const signedInAs = signedInLabel(relyingApp, { email: signedInEmail, name: home?.name, address: home?.address });
@@ -950,6 +956,7 @@ export function RecognizedEnroll({ api, onUnrecognized }: { api: EnrollApi; onUn
           appHost={appHost}
           purpose={enroll?.purpose}
           defaultName={enroll?.orgBase}
+          hideHandles={hideIds}
           onChoose={(c) => { setOrgSel(c); setPhase('consent'); }}
           onDecline={onDecline}
         />
@@ -1017,7 +1024,7 @@ export function RecognizedEnroll({ api, onUnrecognized }: { api: EnrollApi; onUn
       <div className="onboarding-card wide">
         {enroll.template === 'org-create' && (enroll.orgBase ?? orgSel?.orgName) && (
           <p className="onboarding-sub">
-            Organization: <strong>{enroll.orgBase ?? orgSel?.orgName}</strong>
+            Organization: <strong>{clientOrgName(relyingApp, (enroll.orgBase ?? orgSel?.orgName)!)}</strong>
             {(enroll.existingOrg ?? orgSel?.existingOrg) ? ' — existing; no new org is created.' : ' — new.'}
           </p>
         )}
@@ -1032,6 +1039,7 @@ export function RecognizedEnroll({ api, onUnrecognized }: { api: EnrollApi; onUn
         <ConsentSheet
           title={fmt(c.authorizeStepTitle, { app: appName })}
           signedInAs={signedInAs}
+          signedInBare={hideIds && !!home}
           appName={appName}
           appDomain={enroll.viaHost ? `through ${registeredName} · ${appDomain}` : appDomain}
           appLogo={relyingApp?.logo}

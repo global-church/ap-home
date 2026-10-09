@@ -15,9 +15,11 @@ export function BrandShield({ size = 28, variant = 'brand' }: { size?: number; v
     <svg width={size} height={(size * 46) / 40} viewBox="0 0 40 46" fill="none" aria-hidden="true">
       <defs>
         <linearGradient id={id} x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stopColor={a} />
-          <stop offset="50%" stopColor={b} />
-          <stop offset="100%" stopColor={c} />
+          {/* The brand stops are CSS variables with the amber as the fallback, so a relying app's own
+              look (whitelabel RelyingApp.theme) can tint the mark inside its window; unset = amber, as before. */}
+          <stop offset="0%" style={{ stopColor: variant === 'brand' ? `var(--shield-stop-a, ${a})` : a }} />
+          <stop offset="50%" style={{ stopColor: variant === 'brand' ? `var(--shield-stop-b, ${b})` : b }} />
+          <stop offset="100%" style={{ stopColor: variant === 'brand' ? `var(--shield-stop-c, ${c})` : c }} />
         </linearGradient>
       </defs>
       <path
