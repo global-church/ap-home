@@ -492,8 +492,8 @@ const faithImpact: WhiteLabelConfig = {
       // Gather's OWN look for its sign-in window (2026-10-09): a host who clicked "Sign in" on Gather27
       // should not land on a page that looks like another product. Values are Gather's brand tokens
       // (engage apps/gather27-web/src/theme.ts HOUSE_CSS — Figma "Gather27 → Style Guide"): cream paper,
-      // near-black ink, Bright Blue pill buttons, 16px cards, Plus Jakarta Sans with Instrument Serif
-      // italic headings. Scoped to this client's window only (ClientThemeScope); nothing else moves.
+      // near-black ink, Bright Blue pill buttons, 16px cards, Plus Jakarta Sans throughout
+      // (headings too). Scoped to this client's window only (ClientThemeScope); nothing else moves.
       theme: {
         fontHref: 'https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@1&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap',
         vars: {
@@ -540,14 +540,14 @@ const faithImpact: WhiteLabelConfig = {
           '--shield-stop-a': '#5B86E5',
           '--shield-stop-b': '#2A5ED8',
           '--shield-stop-c': '#12161D',
-          // Type — Plus Jakarta Sans everywhere, Instrument Serif italic for the headings.
+          // Type — Plus Jakarta Sans everywhere, headings included (Ryan, 2026-10-09: match the site's normal font).
           '--font-brand-stack': '"Plus Jakarta Sans", system-ui, -apple-system, "Segoe UI", sans-serif',
-          '--theme-heading-font': '"Instrument Serif", Georgia, serif',
-          '--theme-heading-style': 'italic',
-          '--theme-heading-weight': '400',
-          '--theme-heading-tracking': '0',
-          '--theme-h1-size': '2rem',
-          '--theme-title-size': '1.85rem',
+          '--theme-heading-font': '"Plus Jakarta Sans", system-ui, sans-serif',
+          '--theme-heading-style': 'normal',
+          '--theme-heading-weight': '700',
+          '--theme-heading-tracking': '-0.01em',
+          '--theme-h1-size': '1.6rem',
+          '--theme-title-size': '1.5rem',
           // Shapes — Gather --r-pill (200px), --r-card (16px); no drop shadow on the card.
           '--theme-button-radius': '200px',
           '--theme-button-hover': '#12161D',
