@@ -623,12 +623,47 @@ export const passkeySignHash: SignHash = (hash) => {
 // JWKS). So securing a home + giving permission are SERVER round-trips, not device gestures —
 // their only gesture was signing in with Google.
 
+/**
+ * A custody call through the Home's `/a2a` pass-through (a Vercel rewrite to the runtime), retried when the
+ * PASS-THROUGH failed rather than the runtime answering (GC load test, 2026-10-20).
+ *
+ * With five people signing up at once on staging, two were left on the code screen reading
+ * "secure-home failed (HTTP 502)": a 502 with no body, while the runtime recorded the caller hanging up and
+ * no error of its own. Nothing retried it, so a person was stranded. A 502/503/504 that carries the
+ * runtime's own JSON error is the runtime's answer and is returned as is; a bare gateway failure or a
+ * dropped connection is tried again, up to `attempts` times, a little later each time.
+ *
+ * ONLY for calls that are safe to repeat: signing a hash, bootstrapping the email/OIDC home (its address is
+ * fixed by the identity), reading the custodian. Not for org creation or a name claim, where a repeat of a
+ * success whose answer was lost could make a second one.
+ */
+async function custodyFetch(url: string, init: RequestInit, attempts = 3): Promise<Response> {
+  let lastResponse: Response | null = null;
+  let lastError: unknown = null;
+  for (let i = 0; i < attempts; i += 1) {
+    if (i > 0) await new Promise((r) => setTimeout(r, 1500 * i));
+    try {
+      const res = await fetch(url, init);
+      if (![502, 503, 504].includes(res.status)) return res;
+      const text = await res.clone().text().catch(() => '');
+      if (/^\s*\{[\s\S]*"error"/.test(text)) return res; // the runtime's own answer, not the pass-through's
+      lastResponse = res;
+      console.warn(`[custody] ${url} answered ${res.status} with no error of its own — trying again (${i + 1}/${attempts})`);
+    } catch (e) {
+      lastError = e;
+      console.warn(`[custody] ${url} did not answer — trying again (${i + 1}/${attempts})`, e);
+    }
+  }
+  if (lastResponse) return lastResponse;
+  throw lastError instanceof Error ? lastError : new Error(`${url} did not answer`);
+}
+
 /** A SignHash that has demo-a2a sign a digest with the member's KMS custodian. The custody
  *  session proves the member; demo-a2a derives C_sub + signs for `sender` (their SA). */
 export function googleSignHash(sender: Address, sessionToken: string): SignHash {
   return async (hash: Hex): Promise<Hex> => {
     await ensureCsrfToken();
-    const res = await fetch('/a2a/custody/oidc/sign', {
+    const res = await custodyFetch('/a2a/custody/oidc/sign', {
       method: 'POST',
       credentials: 'include',
       headers: { 'content-type': 'application/json', ...csrfHeaders() },
@@ -696,7 +731,7 @@ export async function secureHomeGoogleNoName(
 ): Promise<{ ok: true; agent: Address } | { ok: false; error: string }> {
   onStep?.('Securing your home on the network…');
   await ensureCsrfToken();
-  const res = await fetch('/a2a/custody/oidc/bootstrap', {
+  const res = await custodyFetch('/a2a/custody/oidc/bootstrap', {
     method: 'POST',
     credentials: 'include',
     headers: { 'content-type': 'application/json', ...csrfHeaders() },
@@ -828,7 +863,7 @@ export function connectedCredential(via: string | undefined, name: string | null
  *  derived, not signed). Custody-session authenticated, CSRF — mirrors googleSignHash. */
 export async function resolveGoogleCustodian(sessionToken: string): Promise<Address | null> {
   await ensureCsrfToken();
-  const res = await fetch('/a2a/custody/oidc/custodian', {
+  const res = await custodyFetch('/a2a/custody/oidc/custodian', {
     method: 'POST',
     credentials: 'include',
     headers: { 'content-type': 'application/json', ...csrfHeaders() },
