@@ -97,6 +97,11 @@ function AccountsSection({ a }: { a: Load<AccountsView> }) {
         </List>
       )}
       <Note>A person counts once however many ways they sign in, so the methods add up to more than the total. Growth is measured from the daily count this page keeps, {since}.</Note>
+      {(a.testAccounts ?? 0) > 0 && (
+        <Note>
+          {a.testAccounts.toLocaleString()} test {a.testAccounts === 1 ? 'identity is' : 'identities are'} not counted here: people who signed in as name+gcidtest@…, and organizations only they belong to.
+        </Note>
+      )}
     </Section>
   );
 }

@@ -12,6 +12,7 @@ import {
   type AccountCounts, type OrgCounts, type Snapshot,
 } from '../../src/lib/admin-stats';
 import { costQueries, parseLabels, shapeCosts, type CostTable, type CostsResult } from '../../src/lib/azure-costs';
+import { TEST_AGENT_PREFIX, testAddresses } from '../../src/lib/test-identity';
 
 const json = (b: unknown, s = 200): Response =>
   new Response(JSON.stringify(b), { status: s, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
@@ -79,8 +80,10 @@ export interface AccountsView extends AccountCounts, OrgCounts {
 
 export async function computeAccounts(kv: KVNamespace, now: number): Promise<AccountsView> {
   const facetKeys = (await Promise.all(FACET_PREFIXES.map((p) => listKeys(kv, p)))).flat();
-  const accounts = countAccounts(await readAll(kv, facetKeys));
-  const orgs = countOrgs(await readAll(kv, await listKeys(kv, 'related:')), now);
+  // Test identities (src/lib/test-identity.ts), marked at sign-in: left out of every count, said separately.
+  const testPeople = testAddresses(await listKeys(kv, TEST_AGENT_PREFIX));
+  const accounts = countAccounts(await readAll(kv, facetKeys), testPeople);
+  const orgs = countOrgs(await readAll(kv, await listKeys(kv, 'related:')), now, testPeople);
   let history: Snapshot[] = [];
   try {
     history = JSON.parse((await kv.get(SNAPSHOTS)) ?? '[]') as Snapshot[];

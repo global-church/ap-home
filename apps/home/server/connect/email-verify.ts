@@ -7,6 +7,7 @@
 import { getServer, resolveOrigin, ownIssuer, type FnContext } from '../_lib/server-broker';
 import { mintAgentSession, importJwks, verifyAgentSession } from '@agenticprimitives/connect';
 import { readEmailFacet, recordEmailFacet, emailHash, readRotation } from '../../src/lib/kv-indexer';
+import { isTestEmail, markTestAgent } from '../../src/lib/test-identity';
 import { resolveKmsAgent } from '../_lib/kms-resolve';
 import { isSocialCustodyAud } from '../../src/lib/oidc-clients';
 import { oidcFacetId } from '@agenticprimitives/connect-auth/google';
@@ -106,6 +107,12 @@ export const onRequestPost = async ({ request, env }: FnContext): Promise<Respon
     await recordEmailFacet(env.AUTH_CODES, email, kms.agentId);
     agent = kms.agentId;
     custodyGrade = true;
+    // A test identity (name+gcidtest@…, src/lib/test-identity.ts) is marked here, the one moment the address is in
+    // hand, so the Admin counts can leave it out. Only for the email's OWN home: a real home that merely LINKED a
+    // tagged address (the branch below) is a real person. A failed mark never fails a sign-in.
+    if (isTestEmail(email)) {
+      await markTestAgent(env.AUTH_CODES, String(kms.agentId)).catch((e: unknown) => console.warn('[email-verify] test mark failed', e));
+    }
   } else if (facet) {
     // Email was LINKED to another home (e.g. a passkey home, via the Security card). Respect the link:
     // issue a login-grade session — email never confers custody OVER a device-secured home (ADR-0011).

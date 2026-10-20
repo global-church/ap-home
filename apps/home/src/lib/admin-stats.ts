@@ -64,15 +64,25 @@ export interface AccountCounts {
   accounts: number;
   /** People per method — one person may appear under several, so these do not add up to `accounts`. */
   byMethod: Record<SignInMethod, number>;
+  /** Test identities (test-identity.ts) seen behind a live sign-in, and left out of every number above. */
+  testAccounts: number;
 }
 
-export function countAccounts(facets: { key: string; value: string | null }[]): AccountCounts {
+/** The address at the end of an agent id, or the id itself (lower case) when it has none. */
+const addressOf = (agent: string): string => subjectAddress(agent) ?? agent.toLowerCase();
+
+export function countAccounts(facets: { key: string; value: string | null }[], testPeople: ReadonlySet<string> = new Set()): AccountCounts {
   const all = new Set<string>();
+  const tests = new Set<string>();
   const per: Record<SignInMethod, Set<string>> = { email: new Set(), phone: new Set(), google: new Set(), passkey: new Set(), other: new Set() };
   for (const f of facets) {
     const m = methodOf(f.key);
     for (const l of liveLinks(parseLinks(f.value))) {
       const a = String(l.agent).toLowerCase();
+      if (testPeople.has(addressOf(a))) {
+        tests.add(a);
+        continue;
+      }
       all.add(a);
       per[m].add(a);
     }
@@ -80,6 +90,7 @@ export function countAccounts(facets: { key: string; value: string | null }[]): 
   return {
     accounts: all.size,
     byMethod: { email: per.email.size, phone: per.phone.size, google: per.google.size, passkey: per.passkey.size, other: per.other.size },
+    testAccounts: tests.size,
   };
 }
 
@@ -96,11 +107,14 @@ const DAY = 24 * 60 * 60 * 1000;
 
 /** `related:<person>:<org>` links → distinct orgs. A person's own other names (kind `person`, relationship `self`)
  *  are people, not organizations, and are left out. */
-export function countOrgs(links: { key: string; value: string | null }[], now: number): OrgCounts {
+export function countOrgs(links: { key: string; value: string | null }[], now: number, testPeople: ReadonlySet<string> = new Set()): OrgCounts {
   const first = new Map<string, { kind: string; at: number }>();
   for (const l of links) {
     const org = l.key.split(':')[2]?.toLowerCase();
     if (!org || !ADDRESS.test(org)) continue;
+    // A test identity's link does not make an organization real: an org only test people link to is not counted.
+    const person = l.key.split(':')[1]?.toLowerCase() ?? '';
+    if (testPeople.has(person)) continue;
     let v: { kind?: string; relationship?: string; status?: string; createdAt?: number } = {};
     try {
       v = JSON.parse(l.value ?? '{}') as typeof v;
