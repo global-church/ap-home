@@ -76,6 +76,8 @@ export interface AccountsView extends AccountCounts, OrgCounts {
   new7d: number | null;
   new30d: number | null;
   trackingSince: string | null;
+  /** New since the first daily count: what the tiles show until a full 7 / 30 days of counts exist. */
+  newSinceTracking: number;
   history: Snapshot[];
   asOf: number;
 }
@@ -100,6 +102,7 @@ export async function computeAccounts(kv: KVNamespace, now: number): Promise<Acc
     new7d: growth(history, now, 7, 'accounts'),
     new30d: growth(history, now, 30, 'accounts'),
     trackingSince: history[0]?.date ?? null,
+    newSinceTracking: accounts.accounts - (history[0]?.accounts ?? accounts.accounts),
     history: history.slice(-90),
     asOf: now,
   };

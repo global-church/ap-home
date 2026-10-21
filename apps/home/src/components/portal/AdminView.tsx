@@ -87,12 +87,14 @@ function AccountsSection({ a }: { a: Load<AccountsView> }) {
     <Section title="GCID accounts" aside={<Meta>as of {when(a.asOf)}</Meta>} testId="admin-accounts">
       <Stats>
         <Stat label="people with a GCID" value={a.accounts.toLocaleString()} testId="admin-accounts-total" />
-        <Stat label="new in 7 days" value={plus(a.new7d)} hint={a.new7d === null ? since : undefined} />
-        <Stat label="new in 30 days" value={plus(a.new30d)} hint={a.new30d === null ? since : undefined} />
+        {/* Until 7 / 30 days of daily counts exist, the tile shows growth since counting began, and says so. */}
+        <Stat label="new in 7 days" value={plus(a.new7d ?? a.newSinceTracking ?? null)} hint={a.new7d === null ? `since ${dayLabel(a.trackingSince ?? '')}, when counting began` : undefined} />
+        <Stat label="new in 30 days" value={plus(a.new30d ?? a.newSinceTracking ?? null)} hint={a.new30d === null ? `since ${dayLabel(a.trackingSince ?? '')}, when counting began` : undefined} />
         <Stat label="organizations" value={a.organizations.toLocaleString()} hint={`+${a.newOrganizations7d} this week · +${a.newOrganizations30d} in 30 days`} />
         <Stat label="workspaces" value={a.workspaces.toLocaleString()} hint="app workspaces, e.g. Gather27" />
       </Stats>
-      {a.history.length > 1 && <Sparkline points={a.history.map((s) => ({ label: s.date, value: s.accounts }))} title="People with a GCID, by day" />}
+      {/* Two or three days draw a single slope that says nothing; the chart waits for a week of daily counts. */}
+      {a.history.length >= 7 && <Sparkline points={a.history.map((s) => ({ label: s.date, value: s.accounts }))} title="People with a GCID, by day" />}
       {methods.length > 0 && (
         <List>
           {methods.map(([m, n]) => (
