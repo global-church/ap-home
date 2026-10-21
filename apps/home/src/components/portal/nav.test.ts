@@ -13,7 +13,7 @@
  * the fix is to delete the exception, not to loosen the test.
  */
 import { describe, it, expect } from 'vitest';
-import { buildNav, buildSettingsPane, buildUserMenu, paneGroups, stewardshipPane, securityPane, connectedPane, developerPane, type NavGroup } from './nav';
+import { buildNav, buildSettingsPane, buildUserMenu, withAdminNav, paneGroups, stewardshipPane, securityPane, connectedPane, developerPane, type NavGroup } from './nav';
 import { whitelabel } from '../../whitelabel/config';
 
 const ORG = '0xe26157068af46629691e2ab19726bf61476e6b6c';
@@ -380,5 +380,18 @@ describe('2026-10-09 — the Admin row', () => {
     const row = buildUserMenu(whitelabel, { isAdmin: true }).find((i) => i.id === 'admin');
     expect(row?.label).toBe('Admin');
     expect(row?.href).toBe('/admin');
+  });
+});
+
+describe('Admin in the sidebar (2026-10-21)', () => {
+  const ids = (gs: NavGroup[]) => gs.flatMap((g) => g.items.map((i) => i.id));
+  it('is last, below Settings, for an admin in their own workspace', () => {
+    const gs = withAdminNav(buildNav(whitelabel), true, { kind: 'person' });
+    expect(ids(gs).slice(-2)).toEqual(['settings', 'admin']);
+  });
+  it('is absent for everyone else, and inside an organization', () => {
+    expect(ids(withAdminNav(buildNav(whitelabel), false, { kind: 'person' }))).not.toContain('admin');
+    const org = { kind: 'org', org: '0x' + 'a'.repeat(40) } as const;
+    expect(ids(withAdminNav(buildNav(whitelabel, {}, org as never), true, org as never))).not.toContain('admin');
   });
 });

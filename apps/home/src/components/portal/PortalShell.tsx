@@ -11,7 +11,8 @@ import { useSession } from '../../context/session';
 import { useManagedAgents } from './ManagedAgents';
 import { parseWorkspacePath, orgHref } from '../../lib/workspace';
 import { orgStatusOf, STATUS_LABEL } from '../../lib/org-lifecycle';
-import { buildNav, buildSettingsPane, paneGroups, bottomNav } from './nav';
+import { buildNav, buildSettingsPane, paneGroups, bottomNav, withAdminNav } from './nav';
+import { useIsAdmin } from '../../home/use-is-admin';
 import { useAskSelection, setAskSelection } from '../../home/ask-selection';
 import type { AskCommand } from '../../home/ask-command';
 import { useRegisteredName } from '../../lib/reverse-name';
@@ -79,6 +80,7 @@ export function PortalShell({ children, appsBadge }: { children: ReactNode; apps
   // 'any' (spec 342): the shell must name and route the workspace the URL points at, whatever the
   // org's lifecycle status — a deactivated org is hidden from lists, not made unreachable.
   const { agents } = useManagedAgents(session?.token ?? null, 'any');
+  const isAdmin = useIsAdmin();
   const { view } = useInboxView(active.kind === 'person' ? session : null);
   const inboxUnread = active.kind === 'person' ? (view?.summary.unreadTotal ?? 0) : 0;
   const activeAgent = active.kind === 'org'
@@ -91,10 +93,12 @@ export function PortalShell({ children, appsBadge }: { children: ReactNode; apps
   // An organization coordinates people by definition; a service agent does when it is a WORKSPACE. A
   // treasury or a registry has no roster, and a Members page that is always empty teaches nothing.
   const hasMembers = active.kind === 'org' || (active.kind === 'service' && activeAgent?.kind === 'workspace');
-  const groups = buildNav(whitelabel, {
+  const baseGroups = buildNav(whitelabel, {
     apps: appsBadge,
     inbox: inboxUnread > 0 ? inboxUnread : undefined,
   }, active, rel, workspaceName, hasMembers, activeAgent?.governor);
+  // Admin, last in the sidebar, for the people on HOME_ADMINS only (the server answers; 2026-10-21).
+  const groups = withAdminNav(baseGroups, isAdmin, active);
   // "Has a name" means the NAMING SERVICE resolves to this agent — not that the managed-agent row has a
   // label. A workspace's row says "Northern Colorado Field", which is a display label and not a name
   // anything can resolve; keying off it would call a nameless agent named.
@@ -109,7 +113,7 @@ export function PortalShell({ children, appsBadge }: { children: ReactNode; apps
     connected: paneGroups('connected'),
     developer: paneGroups('developer'),
   };
-  const tabs = bottomNav(groups);
+  const tabs = bottomNav(baseGroups);
   // spec 342 — the workspace of a deactivated or deleted org still opens (a hidden row is a view
   // decision, not a locked door), but it must SAY why it is missing from everywhere else.
   const orgStatus = active.kind === 'org' && activeAgent ? orgStatusOf(activeAgent) : 'active';

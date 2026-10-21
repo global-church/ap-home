@@ -6,7 +6,7 @@ import { isPersonClassScope, isSelfScope, personaHref, type WorkspaceScope } fro
 import { orgHref, serviceHref, workspaceHref } from '../../lib/workspace';
 import {
   UserIcon, BuildingIcon, LandmarkIcon, DatabaseIcon, TagIcon, AwardIcon, LinkIcon, ShieldIcon, HistoryIcon, HomeIcon, FingerprintIcon,
-  ChatIcon, HashIcon, GlobeIcon, BotIcon, CheckCircleIcon, SettingsIcon, CodeIcon, IdCardIcon,
+  ChatIcon, HashIcon, GlobeIcon, BotIcon, CheckCircleIcon, SettingsIcon, CodeIcon, IdCardIcon, LockIcon,
   type IconComponent,
 } from '../shared/Icons';
 
@@ -460,6 +460,14 @@ export function buildSettingsPane(
     { heading: 'Behaviour', items: behaviour },
     { heading: 'Authority', items: access },
   ].filter((g) => g.items.length > 0);
+}
+
+/** Admin in the left sidebar (Global.Church, 2026-10-21): last, below Settings, and only in the person's own
+ *  workspace — it is about the deployment, not about an org. Shown only when the server says this person is on
+ *  HOME_ADMINS (`useIsAdmin`); the Admin routes refuse everyone else whatever the nav shows. */
+export function withAdminNav(groups: NavGroup[], isAdmin: boolean, active: WorkspaceScope): NavGroup[] {
+  if (!isAdmin || active.kind !== 'person') return groups;
+  return [...groups, { items: [{ id: 'admin', label: 'Admin', href: '/admin', Icon: LockIcon, status: 'live' }] }];
 }
 
 /** spec 348 §4 — the topbar user menu: about the signed-in PERSON and the deployment, not about the
