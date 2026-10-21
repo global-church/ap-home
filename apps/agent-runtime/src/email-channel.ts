@@ -10,7 +10,8 @@
 //     addresses verified in the account, so it is right for replies and estate mail and wrong for
 //     inviting a stranger.
 //   · SENDGRID — an HTTP API that will send to anyone, which is what an invitation needs.
-// Both behind one port, so a caller asks for "email" and the deployment decides which rail carries it.
+//   · MAILGUN — the same shape as SendGrid, for a deployment whose operator already holds a Mailgun account.
+// All behind one port, so a caller asks for "email" and the deployment decides which rail carries it.
 import {
   firstAvailableSender, handleFromAddress, inboundEmailToMessage, isEmailAddress,
   type EmailSenderPort, type InboundEmailV1, type OutboundEmailV1,
@@ -25,6 +26,12 @@ export interface EmailEnv {
   /** The display name mail goes out under. */
   EMAIL_FROM_NAME?: string;
   SENDGRID_API_KEY?: string;
+  /** Mailgun sending key — a domain-scoped key, not the account key. */
+  MAILGUN_API_KEY?: string;
+  /** The Mailgun sending domain. Unset → the domain of `EMAIL_FROM`. */
+  MAILGUN_DOMAIN?: string;
+  /** `https://api.eu.mailgun.net` for an EU-region account. Unset → the US endpoint. */
+  MAILGUN_API_BASE?: string;
   /** The verified sender address mail goes out as. Required by both rails. */
   EMAIL_FROM?: string;
   /** The zones whose mail this deployment answers for, comma-separated (`faithnet.me`). */
@@ -86,7 +93,8 @@ export function sendgridSender(env: EmailEnv): EmailSenderPort {
           headers: { 'content-type': 'application/json', authorization: `Bearer ${env.SENDGRID_API_KEY!.trim()}` },
           body: JSON.stringify({
             personalizations: [{ to: [{ email: msg.to }] }],
-            from: { email: env.EMAIL_FROM!.trim() },
+            from: { email: env.EMAIL_FROM!.trim(), ...(env.EMAIL_FROM_NAME?.trim() ? { name: env.EMAIL_FROM_NAME.trim() } : {}) },
+            ...((msg as { replyTo?: string }).replyTo ? { reply_to: { email: (msg as { replyTo?: string }).replyTo } } : {}),
             subject: msg.subject,
             content: [{ type: 'text/plain', value: msg.text }, ...(msg.html ? [{ type: 'text/html', value: msg.html }] : [])],
           }),
@@ -100,16 +108,49 @@ export function sendgridSender(env: EmailEnv): EmailSenderPort {
   };
 }
 
+export function mailgunSender(env: EmailEnv): EmailSenderPort {
+  return {
+    name: 'mailgun',
+    available: () => !!env.MAILGUN_API_KEY?.trim() && !!env.EMAIL_FROM?.trim(),
+    async send(msg) {
+      const from = env.EMAIL_FROM!.trim();
+      const domain = env.MAILGUN_DOMAIN?.trim() || from.split('@')[1] || '';
+      const base = (env.MAILGUN_API_BASE?.trim() || 'https://api.mailgun.net').replace(/\/$/, '');
+      const replyTo = (msg as { replyTo?: string }).replyTo;
+      const form = new URLSearchParams({
+        from: env.EMAIL_FROM_NAME?.trim() ? `${env.EMAIL_FROM_NAME.trim()} <${from}>` : from,
+        to: msg.to, subject: msg.subject, text: msg.text,
+      });
+      if (msg.html) form.set('html', msg.html);
+      if (replyTo) form.set('h:Reply-To', replyTo);
+      if (msg.inReplyTo) { form.set('h:In-Reply-To', msg.inReplyTo); form.set('h:References', msg.inReplyTo); }
+      try {
+        const res = await fetch(`${base}/v3/${encodeURIComponent(domain)}/messages`, {
+          method: 'POST',
+          headers: { authorization: `Basic ${btoa(`api:${env.MAILGUN_API_KEY!.trim()}`)}` },
+          body: form,
+        });
+        const body = (await res.json().catch(() => ({}))) as { id?: string; message?: string };
+        if (!res.ok) return { ok: false, via: 'mailgun', error: `mailgun ${res.status}${body.message ? `: ${body.message}` : ''}` };
+        return { ok: true, via: 'mailgun', ...(body.id ? { messageId: body.id } : {}) };
+      } catch (e) {
+        return { ok: false, via: 'mailgun', error: e instanceof Error ? e.message : 'send failed' };
+      }
+    },
+  };
+}
+
 /**
  * The rail this deployment sends on, or null.
  *
- * ORDER IS A STATED PREFERENCE, not a fallback: SendGrid first because it reaches ANY address, which is
- * what an invitation needs; Cloudflare second because it is bound to verified destinations. A configured
+ * ORDER IS A STATED PREFERENCE, not a fallback: an HTTP provider first (Mailgun, then SendGrid), because
+ * its volume is the plan's stated volume; Cloudflare last, because a new account's daily quota is
+ * unpublished and grows only with reputation (gcid.me ran out of it in testing, 2026-10-20). A configured
  * provider that fails returns its error — nothing is re-sent down the other rail, because a message
  * delivered twice is worse than one that reports it did not go.
  */
 export function emailSender(env: EmailEnv): EmailSenderPort | null {
-  return firstAvailableSender([sendgridSender(env), cloudflareSender(env)]);
+  return firstAvailableSender([mailgunSender(env), sendgridSender(env), cloudflareSender(env)]);
 }
 
 export function emailZones(env: EmailEnv): string[] {
