@@ -17,6 +17,8 @@ import {
   type EmailSenderPort, type InboundEmailV1, type OutboundEmailV1,
 } from '@agenticprimitives/fabric/email';
 
+import { reportToSentry } from './sentry-report.js';
+
 /** The bindings and secrets the two providers need. All optional: email is a capability a deployment
  *  HAS or does not, and the surfaces ask before they offer it. */
 export interface EmailEnv {
@@ -36,6 +38,9 @@ export interface EmailEnv {
   EMAIL_FROM?: string;
   /** The zones whose mail this deployment answers for, comma-separated (`faithnet.me`). */
   EMAIL_ZONES?: string;
+  /** Sentry (sentry-report.ts): a failover is reported there. Unset DSN -> logged only. */
+  SENTRY_DSN?: string;
+  SENTRY_ENVIRONMENT?: string;
 }
 
 /**
@@ -140,17 +145,70 @@ export function mailgunSender(env: EmailEnv): EmailSenderPort {
   };
 }
 
+/** A refusal about the RECIPIENT (a mistyped or dead address): every rail would refuse it, so no failover. */
+const RECIPIENT_ERROR = /not a valid address|invalid (email )?(address|domain)|can't receive email|recipient/i;
+
+/** Error text for a report: provider messages can quote the address, and no address goes to Sentry. */
+const scrub = (t: string | undefined) => (t ?? '').replace(/[^\s<>"'@]+@[^\s<>"'@]+/g, '<address>').slice(0, 500);
+
 /**
- * The rail this deployment sends on, or null.
+ * FAILOVER (GC, 2026-10-21). Rails in order; when one REFUSES a message or cannot be reached, the next
+ * available rail sends it, and the failover is logged and reported to Sentry.
  *
- * ORDER IS A STATED PREFERENCE, not a fallback: an HTTP provider first (Mailgun, then SendGrid), because
- * its volume is the plan's stated volume; Cloudflare last, because a new account's daily quota is
- * unpublished and grows only with reputation (gcid.me ran out of it in testing, 2026-10-20). A configured
- * provider that fails returns its error — nothing is re-sent down the other rail, because a message
- * delivered twice is worse than one that reports it did not go.
+ * This is a deliberate exception to the package's "preference, not fallback" rule (ADR-0013), agreed by
+ * Paul and Ryan after Cloudflare's unpublished daily quota stopped every sign-in code on 2026-10-20. The
+ * rule guards against a message delivered twice. Here the cost is small: a sign-in code is reused while
+ * it is valid, so a duplicate carries the same code, and every failover is reported, so nothing hides.
+ * A refusal about the recipient is returned as is: every rail would refuse it.
+ */
+export function failoverSender(
+  rails: readonly EmailSenderPort[],
+  onFailover: (event: { failed: string; error: string; next: string; delivered: boolean; nextError?: string }) => Promise<void> | void,
+): EmailSenderPort {
+  const [first] = rails;
+  if (!first) throw new Error('failoverSender needs at least one rail');
+  return {
+    name: first.name,
+    available: () => rails.some((r) => r.available()),
+    async send(msg) {
+      let last: Awaited<ReturnType<EmailSenderPort['send']>> | null = null;
+      let failed: { name: string; error: string } | null = null;
+      for (const rail of rails) {
+        if (!rail.available()) continue;
+        const result = await rail.send(msg).catch((e: unknown) => ({ ok: false as const, via: rail.name, error: e instanceof Error ? e.message : String(e) }));
+        if (failed) {
+          await Promise.resolve(onFailover({ failed: failed.name, error: failed.error, next: rail.name, delivered: result.ok, ...(result.ok ? {} : { nextError: result.error ?? '' }) })).catch(() => undefined);
+        }
+        if (result.ok) return result;
+        last = result;
+        if (RECIPIENT_ERROR.test(result.error ?? '')) return result;
+        failed = { name: rail.name, error: result.error ?? 'send failed' };
+      }
+      return last ?? { ok: false, error: 'no email rail is configured' };
+    },
+  };
+}
+
+/**
+ * The rail this deployment sends on, or null. Mailgun, then SendGrid, then Cloudflare: an HTTP provider
+ * first, because a new Cloudflare account's daily quota is unpublished and grows only with reputation.
+ * With more than one configured, a refusal fails over to the next (failoverSender above).
  */
 export function emailSender(env: EmailEnv): EmailSenderPort | null {
-  return firstAvailableSender([mailgunSender(env), sendgridSender(env), cloudflareSender(env)]);
+  const rails = [mailgunSender(env), sendgridSender(env), cloudflareSender(env)].filter((r) => r.available());
+  if (rails.length <= 1) return firstAvailableSender(rails);
+  return failoverSender(rails, (ev) => {
+    const what = ev.delivered ? `${ev.failed} failed, sent via ${ev.next}` : `${ev.failed} failed and ${ev.next} failed too`;
+    return reportToSentry(
+      { app: 'gcid-runtime', dsn: env.SENTRY_DSN, environment: env.SENTRY_ENVIRONMENT },
+      {
+        message: `email failover: ${what}`,
+        level: ev.delivered ? 'warning' : 'error',
+        tags: { failed: ev.failed, next: ev.next, delivered: ev.delivered },
+        extra: { error: scrub(ev.error), ...(ev.nextError !== undefined ? { nextError: scrub(ev.nextError) } : {}) },
+      },
+    );
+  });
 }
 
 export function emailZones(env: EmailEnv): string[] {
