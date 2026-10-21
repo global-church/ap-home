@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const sent: Array<{ to: string; code: string; replyTo?: string }> = [];
 let lastApp: { name?: string; replyTo?: string } | undefined;
 let failNext = false;
+vi.mock('../_lib/home-sentry', async (orig) => ({ ...(await orig<object>()), reportHomeError: async () => {} }));
 vi.mock('../_lib/email-sender', () => ({
   emailSendingEnabled: () => true,
   otpEmail: (to: string, code: string, _brand: string, app?: { name?: string; replyTo?: string }) => {
@@ -80,6 +81,11 @@ describe('POST /connect/email/start', () => {
     failNext = true;
     const first = await ask(env);
     expect(first.status).toBe(502);
+    // The person sees a plain message, never the provider's text (Clayton, 2026-10-20).
+    const body = (await first.json()) as { error: string; reason: string };
+    expect(body.reason).toBe('send_failed');
+    expect(body.error).toMatch(/couldn't send your code/);
+    expect(body.error).not.toMatch(/Invalid email/);
     expect(sent).toHaveLength(0);
     await ask(env);
     expect(sent).toHaveLength(1);

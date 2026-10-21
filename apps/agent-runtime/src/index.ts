@@ -275,6 +275,7 @@ export { InteractionsDO } from './interactions-do.js';
 export { HuddleRoomDO } from './huddle-room-do.js';
 export { ProviderMeterDO } from './provider-meter-do.js';
 export { ExperimentDO } from './experiment-do.js';
+import { reportToSentry } from './sentry-report.js';
 
 export interface Env {
   /** Perf (2026-10-02) — agents whose cold read path the `scheduled` cron keeps warm (comma-separated SAs).
@@ -305,6 +306,9 @@ export interface Env {
   /** Spec 415 A5 — the Lab's experiments: one object per plan id, a comparison run on this deployment one case per
    *  alarm (experiment-do.ts). Unbound ⇒ `/harness/experiments` answers 503 and comparisons run from the CLI only. */
   EXPERIMENTS?: DurableObjectNamespace;
+  /** GC 2026-10-21 - Sentry (sentry-report.ts): the project's DSN, and `production` or `staging`. Unset DSN -> off. */
+  SENTRY_DSN?: string;
+  SENTRY_ENVIRONMENT?: string;
   /** Spec 388 — the third offered provider: OpenAI's cheapest tool-calling model, between the free tier
    *  and Haiku. */
   OPENAI_API_KEY?: string;
@@ -10691,6 +10695,21 @@ async function warmReadChain(env: Env, ctx: ExecutionContext): Promise<void> {
     ]),
   );
 }
+
+// GC 2026-10-21 - an unhandled error goes to Sentry as well as the log. The response is exactly Hono's default
+// (an HTTPException's own response, else a plain 500), so callers see no change. Off when SENTRY_DSN is unset.
+app.onError((err, c) => {
+  if ('getResponse' in err) {
+    const res = (err as { getResponse(): Response }).getResponse();
+    return c.newResponse(res.body, res);
+  }
+  const report = reportToSentry(
+    { app: 'gcid-runtime', dsn: c.env.SENTRY_DSN, environment: c.env.SENTRY_ENVIRONMENT },
+    { message: `unhandled error on ${c.req.method} ${c.req.routePath}`, error: err, tags: { route: c.req.routePath, method: c.req.method } },
+  );
+  try { c.executionCtx.waitUntil(report); } catch { /* no execution context (tests) */ }
+  return c.text('Internal Server Error', 500);
+});
 
 export default {
   fetch: app.fetch,

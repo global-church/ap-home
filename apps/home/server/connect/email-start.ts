@@ -7,6 +7,7 @@ import type { FnContext } from '../_lib/server-broker';
 import { sendEmail, otpEmail, emailSendingEnabled } from '../_lib/email-sender';
 import { emailHash } from '../../src/lib/kv-indexer';
 import { whitelabel } from '../../src/whitelabel/config';
+import { CODE_SEND_FAILED, reportHomeError } from '../_lib/home-sentry';
 
 const cors = { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'content-type' };
 const json = (b: unknown, s = 200): Response =>
@@ -67,7 +68,12 @@ export const onRequestPost = async ({ request, env }: FnContext): Promise<Respon
   // 2026-10-16 and new hosts were told "we couldn't set up a home for this email".
   const app = body?.app ? whitelabel.relyingApps.find((a) => a.client_id === body.app) : undefined;
   const sent = await sendEmail(env, otpEmail(email, code, whitelabel.brand.name, app ? { name: app.name, replyTo: app.replyTo } : undefined));
-  if (!sent.ok) return json({ error: `could not send the code: ${sent.error}` }, 502);
+  if (!sent.ok) {
+    // The person gets a plain message; the provider's error goes to Sentry (Clayton, 2026-10-20: a host was
+    // shown Cloudflare's raw "daily sending quota" text). No email address on the event.
+    await reportHomeError({ message: 'sign-in code email could not be sent', error: sent.error, tags: { route: 'connect/email/start', app: body?.app } });
+    return json({ error: CODE_SEND_FAILED, reason: 'send_failed' }, 502);
+  }
   await env.AUTH_CODES.put(key, record(now), ttl);
   // `delivery:'logged'` tells the client (dev) the code was console-logged, not emailed (no provider key).
   // Testing convenience: echo the code when UNCONFIGURED + DEV_OTP_ECHO=true (a real SendGrid key never echoes).

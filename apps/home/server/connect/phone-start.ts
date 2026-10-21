@@ -7,6 +7,7 @@ import type { FnContext } from '../_lib/server-broker';
 import { sendPhoneVerification, smsVerifyEnabled, smsMessagingEnabled, sendSms, normalizeE164 } from '../_lib/sms-sender';
 import { phoneHash } from '../../src/lib/kv-indexer';
 import { whitelabel } from '../../src/whitelabel/config';
+import { CODE_SEND_FAILED, reportHomeError } from '../_lib/home-sentry';
 
 const cors = { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'content-type' };
 const json = (b: unknown, s = 200): Response =>
@@ -39,7 +40,10 @@ export const onRequestPost = async ({ request, env }: FnContext): Promise<Respon
   if (useVerify) {
     await env.AUTH_CODES.put(key, JSON.stringify({ aud, provider: 'twilio' }), { expirationTtl: 600 });
     const sent = await sendPhoneVerification(env, phone);
-    if (!sent.ok) return json({ error: `could not send the code: ${sent.error}` }, 502);
+    if (!sent.ok) {
+      await reportHomeError({ message: 'sign-in code text could not be sent', error: sent.error, tags: { route: 'connect/phone/start' } });
+      return json({ error: CODE_SEND_FAILED, reason: 'send_failed' }, 502);
+    }
     return json({ ok: true, delivery: 'sent' });
   }
 
@@ -50,7 +54,10 @@ export const onRequestPost = async ({ request, env }: FnContext): Promise<Respon
 
   if (useMessaging) {
     const sent = await sendSms(env, phone, `${code} is your ${whitelabel.brand.name} sign-in code. It expires in 10 minutes.`);
-    if (!sent.ok) return json({ error: `could not send the code: ${sent.error}` }, 502);
+    if (!sent.ok) {
+      await reportHomeError({ message: 'sign-in code text could not be sent', error: sent.error, tags: { route: 'connect/phone/start' } });
+      return json({ error: CODE_SEND_FAILED, reason: 'send_failed' }, 502);
+    }
     return json({ ok: true, delivery: 'sent' });
   }
 
