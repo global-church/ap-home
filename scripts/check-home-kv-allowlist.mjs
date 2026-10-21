@@ -41,6 +41,7 @@ const ALLOWLIST = {
   // HOME-PORT-2 (2026-07-12): this table classifies by PREFIX NAME; a 'cache' rationale is a REVIEWER
   // ASSERTION, not a programmatically-verified rebuild path. The three wire-bearing prefixes below carry a
   // KNOWN, TRACKED gap (HOME-PORT-1) — read their 'why' literally, do not treat them as verified-portable.
+  'contact': { class: 'cache', why: 'the operator copy of a person’s verified contact email (contact-directory.ts, 2026-10-21): AES-256-GCM under CONTACT_DIRECTORY_KEY, readable only through the Admin lookup, which records each read on the record. The record is the person’s own vault profile (impact-profile contact.email, seeded at sign-in); this copy is rewritten at their next sign-in if lost.' },
   'related': { class: 'cache', why: 'relationship link. The STEWARDSHIP wire self-heals from the person vault relationships.data (spec 323 W1); but the member→org membershipDelegation stored here is NOT mirrored to the vault — that wire is Home-KV-only (HOME-PORT-1, OPEN).' },
   'related-idx': { class: 'cache', why: 'index of the relationships.data projection (spec 323 W1)' },
   'related-miss': { class: 'cache', why: 'five-minute NEGATIVE cache (expirationTtl 300): this person has no relationships.data entry for this org — skips the per-request vault read in stewardWireFor; consulted only after the related: link, rebuilt from the vault on expiry' },

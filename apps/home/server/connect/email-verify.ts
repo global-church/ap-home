@@ -12,6 +12,7 @@ import { resolveKmsAgent } from '../_lib/kms-resolve';
 import { isSocialCustodyAud } from '../../src/lib/oidc-clients';
 import { oidcFacetId } from '@agenticprimitives/connect-auth/google';
 import type { CredentialPrincipal, CanonicalAgentId } from '@agenticprimitives/types';
+import { recordContactEmail } from '../_lib/contact-directory';
 
 // The (iss, sub) namespace for email-subject KMS custody. Email has no OIDC provider, so WE are the
 // issuer authority: `iss = 'email'`, `sub = SHA-256(email)`. demo-a2a derives the per-subject custodian
@@ -66,6 +67,8 @@ export const onRequestPost = async ({ request, env }: FnContext): Promise<Respon
   const signedIn = await sessionAgent(request, env);
   if (signedIn) {
     await recordEmailFacet(env.AUTH_CODES, email, signedIn);
+    // The operator's copy of a verified contact address (contact-directory.ts). Never fails the link.
+    await recordContactEmail(env, String(signedIn), email, 'email-link');
     return json({ status: 'linked', via: 'email' });
   }
 
@@ -125,6 +128,10 @@ export const onRequestPost = async ({ request, env }: FnContext): Promise<Respon
     // No home + custody ineligible/unreachable → the client onboards with a passkey/Google first.
     return json({ status: 'bootstrap', via: 'email', email });
   }
+
+  // The operator's copy of the address this person just verified (contact-directory.ts, 2026-10-21): every account
+  // from launch on can be reached. Encrypted; Admin-only; never fails a sign-in.
+  await recordContactEmail(env, String(agent), email, 'email-sign-in');
 
   const sessionPrincipal: CredentialPrincipal = custodyGrade
     // Custody sessions are OIDC-subject-shaped (`kind:'oidc'`, id='email#<hash>') so demo-a2a's provider-

@@ -131,6 +131,8 @@ export interface Env {
   ALLOWED_ISSUER_HOSTS?: string;
   /** The Admin tab (2026-10-09): comma list of person addresses allowed to open it. Unset/empty = nobody. */
   HOME_ADMINS?: string;
+  /** The operator contact directory's AES-256 key, base64 (32 bytes) — contact-directory.ts. Unset = no copies kept. */
+  CONTACT_DIRECTORY_KEY?: string;
   /** Azure spending on the Admin tab: a read-only (Cost Management Reader) service principal on one subscription. */
   AZURE_TENANT_ID?: string;
   AZURE_CLIENT_ID?: string;

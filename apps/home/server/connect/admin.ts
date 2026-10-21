@@ -15,11 +15,13 @@ import {
 } from '../../src/lib/admin-stats';
 import { costQueries, parseLabels, shapeCosts, type CostTable, type CostsResult } from '../../src/lib/azure-costs';
 import { TEST_AGENT_PREFIX, testAddresses } from '../../src/lib/test-identity';
+import { accountAddress, contactDirectoryEnabled, contactLookups, lookUpContactEmail } from '../_lib/contact-directory';
+import { readEmailFacet } from '../../src/lib/kv-indexer';
 
 const json = (b: unknown, s = 200): Response =>
   new Response(JSON.stringify(b), { status: s, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
 
-type Gate = { ok: true; admin: boolean } | { ok: false; res: Response };
+type Gate = { ok: true; admin: boolean; sub: string } | { ok: false; res: Response };
 
 async function session(request: Request, env: Env): Promise<Gate> {
   const auth = request.headers.get('authorization') ?? '';
@@ -29,7 +31,7 @@ async function session(request: Request, env: Env): Promise<Gate> {
   const keys = await importJwks(jwks);
   const v = await verifyAgentSession(token, { keys, expectedAud: env.DEMO_SSO_AUD ?? 'demo-sso', expectedIss: ownIssuer(request, env) });
   if (!v.ok) return { ok: false, res: json({ error: 'invalid session' }, 401) };
-  return { ok: true, admin: isAdmin(v.session.sub, parseAdmins(env.HOME_ADMINS)) };
+  return { ok: true, admin: isAdmin(v.session.sub, parseAdmins(env.HOME_ADMINS)), sub: String(v.session.sub) };
 }
 
 /** 401 without a valid session, 403 for anyone not on HOME_ADMINS; null = go ahead. */
@@ -136,6 +138,52 @@ export const onAdminOrgTypes = async ({ request, env }: FnContext): Promise<Resp
   const testPeople = testAddresses(await listKeys(kv, TEST_AGENT_PREFIX));
   const tally = tallyOrgTypes(await readAll(kv, await listKeys(kv, 'related:')), testPeople);
   return json({ ...tally, asOf: Date.now() } satisfies OrgTypesView);
+};
+
+// ── Contact lookup (2026-10-21) ──────────────────────────────────────────────────────────────────────────────────
+// GET /connect/admin/contact?q=<account or organization address, or an email>. The operator's contact directory
+// (contact-directory.ts): the one Admin route that returns an email address, to an admin, with every read recorded.
+//  - an account address → that person's contact email;
+//  - an organization address → the contact email of each person who stewards it (its related links);
+//  - an email → the account(s) that sign in with it (by its hash), and their contact email.
+
+export interface ContactRow { account: string; relation: 'account' | 'steward'; email: string | null; verifiedAt: number | null; lookedUpBefore: number }
+export interface ContactView { query: string; enabled: boolean; rows: ContactRow[] }
+
+export const onAdminContact = async ({ request, env }: FnContext): Promise<Response> => {
+  const g = await session(request, env);
+  if (!g.ok) return g.res;
+  if (!g.admin) return json({ error: 'not an admin of this Home' }, 403);
+  const by = accountAddress(g.sub) ?? g.sub;
+  const q = (new URL(request.url).searchParams.get('q') ?? '').trim().toLowerCase();
+  if (!q) return json({ error: 'q required: an account or organization address, or an email' }, 400);
+  if (!contactDirectoryEnabled(env)) return json({ query: q, enabled: false, rows: [] } satisfies ContactView);
+
+  const accounts: { account: string; relation: ContactRow['relation'] }[] = [];
+  if (q.includes('@')) {
+    const facet = await readEmailFacet(env.AUTH_CODES, q);
+    const a = facet ? accountAddress(String(facet)) : null;
+    if (a) accounts.push({ account: a, relation: 'account' });
+  } else if (/^0x[0-9a-f]{40}$/.test(q)) {
+    accounts.push({ account: q, relation: 'account' });
+    // As an organization: the people whose related link points at it.
+    const stewards = (await listKeys(env.AUTH_CODES, 'related:')).filter((k) => k.split(':')[2]?.toLowerCase() === q);
+    for (const k of stewards) {
+      const person = k.split(':')[1]?.toLowerCase() ?? '';
+      if (/^0x[0-9a-f]{40}$/.test(person) && person !== q && !accounts.some((x) => x.account === person)) accounts.push({ account: person, relation: 'steward' });
+    }
+  } else {
+    return json({ error: 'not an address or an email' }, 400);
+  }
+
+  const rows: ContactRow[] = [];
+  for (const { account, relation } of accounts) {
+    const before = (await contactLookups(env.AUTH_CODES, account)).length;
+    const found = await lookUpContactEmail(env, account, by);
+    if (!found && relation === 'account' && accounts.length > 1) continue; // the org itself has no contact email
+    rows.push({ account, relation, email: found?.email ?? null, verifiedAt: found?.verifiedAt ?? null, lookedUpBefore: before });
+  }
+  return json({ query: q, enabled: true, rows } satisfies ContactView);
 };
 
 // ── Azure ────────────────────────────────────────────────────────────────────────────────────────────────────────
