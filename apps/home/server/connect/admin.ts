@@ -4,12 +4,14 @@
 // menu only hides the row; these routes refuse a non-admin with 403 whatever the page does. An empty list is
 // nobody (no fallback admin).
 //
-// Numbers only: no emails, no names, no addresses leave these routes — counts and dollars.
+// Numbers only: no emails, no names, no addresses leave these routes — counts and dollars. The one exception is
+// /org-types (2026-10-21): the words people typed for an "Other" organization type, so the team can find what the
+// ontology is missing. Those words, with a date, and nothing that says whose they are.
 import { importJwks, verifyAgentSession } from '@agenticprimitives/connect';
 import { getServer, ownIssuer, type Env, type FnContext, type KVNamespace } from '../_lib/server-broker';
 import {
-  FACET_PREFIXES, countAccounts, countOrgs, dayOf, growth, isAdmin, parseAdmins, recordSnapshot,
-  type AccountCounts, type OrgCounts, type Snapshot,
+  FACET_PREFIXES, countAccounts, countOrgs, dayOf, growth, isAdmin, parseAdmins, recordSnapshot, tallyOrgTypes,
+  type AccountCounts, type OrgCounts, type OrgTypeTally, type Snapshot,
 } from '../../src/lib/admin-stats';
 import { costQueries, parseLabels, shapeCosts, type CostTable, type CostsResult } from '../../src/lib/azure-costs';
 import { TEST_AGENT_PREFIX, testAddresses } from '../../src/lib/test-identity';
@@ -115,6 +117,22 @@ export const onAdminAccounts = async ({ request, env }: FnContext): Promise<Resp
   const body = JSON.stringify(view);
   await env.AUTH_CODES.put(ACCOUNTS_CACHE, body, { expirationTtl: ACCOUNTS_TTL_S });
   return new Response(body, { headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
+};
+
+// ── Organization types (2026-10-21) ─────────────────────────────────────────────────────────────────────────────
+
+export interface OrgTypesView extends OrgTypeTally {
+  asOf: number;
+}
+
+/** GET /connect/admin/org-types — computed on each call (no cache key): one pass over the related links. */
+export const onAdminOrgTypes = async ({ request, env }: FnContext): Promise<Response> => {
+  const refused = await requireAdmin(request, env);
+  if (refused) return refused;
+  const kv = env.AUTH_CODES;
+  const testPeople = testAddresses(await listKeys(kv, TEST_AGENT_PREFIX));
+  const tally = tallyOrgTypes(await readAll(kv, await listKeys(kv, 'related:')), testPeople);
+  return json({ ...tally, asOf: Date.now() } satisfies OrgTypesView);
 };
 
 // ── Azure ────────────────────────────────────────────────────────────────────────────────────────────────────────

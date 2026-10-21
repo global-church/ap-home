@@ -20,6 +20,7 @@
 // the PKCE exchange.
 
 import { mintIdToken, newAuthCode } from '@agenticprimitives/connect';
+import { checkOrgType } from '../../src/lib/org-type';
 import { toCanonicalAgentId } from '@agenticprimitives/identity-directory-adapters';
 import { getServer, json, resolveOrigin, type FnContext } from '../_lib/server-broker';
 import { verifyDelegation, type IncomingDelegation } from '../_lib/verify-delegation';
@@ -212,6 +213,8 @@ export const onRequestPost = async ({ request, env }: FnContext): Promise<Respon
     proofHash?: string; credential?: unknown; brokerDelegation?: { delegate?: string } | null;
     membershipDelegation?: unknown; stewardshipDelegation?: unknown; operationalDelegation?: unknown;
     readGrantDelegation?: unknown;
+    /** Global.Church 2026-10-21: the type chosen for a NEW organization (lib/org-type.ts). Re-checked here. */
+    orgType?: unknown;
   } | null;
   if (orgPayload?.orgAgent && orgPayload.person) {
     const person = orgPayload.person.toLowerCase();
@@ -246,6 +249,8 @@ export const onRequestPost = async ({ request, env }: FnContext): Promise<Respon
       parent: orgPayload.parent ?? existing.parent ?? person,
       // The governor rides the link so the invite ceremony can find it without a vault read (`lib/workspace-governor.ts`).
       ...(orgPayload.governor ? { governor: String(orgPayload.governor).toLowerCase() } : existing.governor ? { governor: existing.governor } : {}),
+      // The organization's type rides the link for Admin's count (org.profile in the org's vault is the record).
+      ...(checkOrgType(orgPayload.orgType) ? { orgType: checkOrgType(orgPayload.orgType) } : existing.orgType ? { orgType: existing.orgType } : {}),
       createdAt: existing.createdAt ?? Date.now(),
     };
     await env.AUTH_CODES.put(`related:${person}:${org}`, JSON.stringify(link));

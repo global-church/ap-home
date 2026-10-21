@@ -20,6 +20,7 @@ import { AddressChip } from '../shared/AddressChip';
 import { BuildingIcon, LinkIcon } from '../shared/Icons';
 
 import { Loading } from '../shared/Loading';
+import { orgTypeText, type OrgTypeV1 } from '../../lib/org-type';
 /** The org's managed profile — the canonical "org details" record the steward edits.
  *  Stored in the ORG's own vault under `org:profile`, written over the stewardship
  *  delegation (delegator = org). Free-form, vertical-agnostic. */
@@ -31,6 +32,8 @@ interface OrgProfile {
   website?: string;
   contactEmail?: string;
   location?: string;
+  /** Chosen when the organization was created (lib/org-type.ts). Shown here; not editable yet. */
+  organizationType?: OrgTypeV1;
 }
 
 const ROOT_AUTHORITY = '0x0000000000000000000000000000000000000000000000000000000000000000';
@@ -159,7 +162,7 @@ export function VaultReader({ title, hint, delegation }: { title: string; hint: 
   );
 }
 
-const FIELDS: Array<{ key: keyof OrgProfile; label: string; ph: string; area?: boolean }> = [
+const FIELDS: Array<{ key: Exclude<keyof OrgProfile, 'v' | 'organizationType'>; label: string; ph: string; area?: boolean }> = [
   { key: 'displayName', label: 'Display name', ph: 'e.g. Grace Community Church' },
   { key: 'description', label: 'Description', ph: 'What this organization does', area: true },
   { key: 'website', label: 'Website', ph: 'https://…' },
@@ -217,6 +220,11 @@ export function OrgProfileManager({ delegation }: { delegation: DelegationWire }
         <Loading label="Loading the org’s details…" />
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '.6rem', maxWidth: 520 }}>
+          {p.organizationType && (
+            <div style={{ fontSize: '.8rem', color: 'var(--c-g600, #475569)' }} data-testid="org-type">
+              Organization type: <b>{orgTypeText(p.organizationType)}</b>
+            </div>
+          )}
           {FIELDS.map((f) => (
             <label key={f.key} style={{ display: 'flex', flexDirection: 'column', gap: '.25rem', fontSize: '.8rem', color: 'var(--c-g600, #475569)' }}>
               {f.label}

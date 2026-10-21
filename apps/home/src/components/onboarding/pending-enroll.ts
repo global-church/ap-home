@@ -3,6 +3,7 @@
 // sessionStorage covers the same-origin return; a short parent-domain cookie covers the hop.
 // This is not authority — PKCE verifier stays on the app; these fields are what was already in the URL.
 import { CONNECT_DOMAIN } from '../../lib/domain';
+import { orgTypeParam } from '../../lib/org-type';
 import type { EnrollReq } from './useEnrollReq';
 
 export const PENDING_ENROLL_KEY = 'pendingEnroll';
@@ -138,6 +139,7 @@ export function enrollReqToQuery(e: EnrollReq): string {
   if (e.nonce) p.set('nonce', e.nonce);
   if (e.orgBase) p.set('org_base', e.orgBase);
   if (e.purpose) p.set('org_purpose', e.purpose);
+  if (e.orgType) p.set('org_type', orgTypeParam(e.orgType));
   if (e.existingOrg) p.set('existing_org', e.existingOrg);
   if (e.grantOrg) p.set('grant_org', e.grantOrg);
   if (e.roleOfferRaw) p.set('role_offer', e.roleOfferRaw);

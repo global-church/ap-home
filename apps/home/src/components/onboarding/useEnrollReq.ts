@@ -8,6 +8,7 @@
 // `whitelabel.relyingApps[].redirect_uris` so the two sources cannot drift.
 import { verifiedEmailFor } from '../../lib/verified-email';
 import { parseRoleOffer, type RoleOfferV1 } from '../../lib/org-role';
+import { parseOrgTypeParam, type OrgTypeV1 } from '../../lib/org-type';
 
 /** `role_offer` — base64url of the offer's JSON. An offer that does not parse is DROPPED WITH A WARNING here and the
  *  ceremony refuses to run with it (see RecognizedEnroll): a role nobody could record is not silently ignored. */
@@ -66,6 +67,9 @@ export interface EnrollReq {
   /** org-create + a registry: the org's registration (presence, affirmed clauses, contact) as the app sent it,
    *  base64url JSON, parsed and checked by `mission-registry.ts` — see `RelyingApp.missionRegistryConfig`. */
   registryEntry?: string;
+  /** org-create (Global.Church, 2026-10-21): the organization's TYPE as the app asked for it (`org_type`, base64url
+   *  JSON, checked by `lib/org-type.ts`). Stored with a NEW organization in its `org.profile`. */
+  orgType?: OrgTypeV1;
   /** Spec 397 — the HOST connecting through a Home MCP (Claude, Muse, …), as the Worker's registration names it. A
    *  display hint for the consent and the Connected card only; the template and delegate come from the registry. */
   viaHost?: string;
@@ -123,6 +127,7 @@ export function parseEnrollReq(): EnrollReq | null {
       prompt: p.get('prompt') ?? undefined,
       requireNamedAgent: p.get('require_named_agent') === 'true' || p.get('require_named_agent') === '1',
       registryEntry: p.get('registry_entry') ?? undefined,
+      orgType: parseOrgTypeParam(p.get('org_type')) ?? undefined,
       viaHost: (p.get('via_host') ?? '').replace(/[^\p{L}\p{N} .,'()&_-]/gu, '').trim().slice(0, 60) || undefined,
     };
   } catch {

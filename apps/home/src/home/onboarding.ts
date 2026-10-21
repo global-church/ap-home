@@ -56,6 +56,7 @@ import { SESSION_KEY } from '../context/session';
 import type { Home } from './types';
 import { homeLabel } from './types';
 import { provisionsAgentPlaybook, provisionsCommunityMessaging } from '../whitelabel/provisioning';
+import type { OrgTypeV1 } from '../lib/org-type';
 
 /** The person's Home session Bearer, from wherever it lives (explicit auth → this-origin localStorage →
  *  parent-domain SSO cookie) — session-gated /connect endpoints (e.g. the naming + membership stores)
@@ -587,6 +588,9 @@ export async function createOrganization(
     grantOrg?: Address;
     existingOrg?: Address;
     signAsOrg?: boolean;
+    /** A NEW organization's type (lib/org-type.ts): written into its `org.profile` and returned on the payload so
+     *  the related link carries it for Admin. Ignored on the existing-org path. */
+    orgType?: OrgTypeV1;
     onProgress?: (p: { step: number; total: number; label: string; hint?: string }) => void;
     /** The organization is deployed and its vault bound — the point past which a retry must REUSE it rather
      *  than deploy another (src/lib/org-deploy-stash.ts). Not called on the existing-org path. */
@@ -802,7 +806,7 @@ export async function createOrganization(
         if (!ix.ok) console.warn('[org-create] interactions grant not provisioned:', ix.error);
       }),
       x.stewardshipDelegation
-        ? vaultWriteWithDelegation(x.stewardshipDelegation, 'org.profile', { v: 1, displayName: x.childName }).catch((e: unknown) =>
+        ? vaultWriteWithDelegation(x.stewardshipDelegation, 'org.profile', { v: 1, displayName: x.childName, ...(opts.orgType ? { organizationType: opts.orgType } : {}) }).catch((e: unknown) =>
             console.warn('[org-create] org profile seed failed:', e),
           )
         : Promise.resolve(),
@@ -851,6 +855,7 @@ export async function createOrganization(
       stewardshipDelegation: x.stewardshipDelegation,  // org→person (person reads org)
       operationalDelegation: x.operationalDelegation,  // org→app service agent (submit intents)
       readGrantDelegation: x.readGrantDelegation,      // org→app workspace (read one record family)
+      ...(opts.orgType ? { orgType: opts.orgType } : {}), // the type the person chose (org.profile has the record)
     },
     grant: x.delegation,
   };

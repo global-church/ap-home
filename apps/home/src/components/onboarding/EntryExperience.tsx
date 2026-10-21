@@ -1360,6 +1360,7 @@ function OrgConsent({ personAgent, api }: { personAgent: Address; api: ReturnTyp
           requestedBy: api.enroll.aud,
           grantOrg: api.enroll.grantOrg,
           existingOrg,
+          orgType: api.enroll.orgType,
           signAsOrg: choice?.asSteward,
           onProgress: setGrantProgress,
         });

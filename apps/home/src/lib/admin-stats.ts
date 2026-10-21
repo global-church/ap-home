@@ -155,3 +155,68 @@ export function growth(history: Snapshot[], now: number, days: number, field: 'a
   if (!today || !then) return null;
   return today[field] - then[field];
 }
+
+// ── Organization types (Global.Church, 2026-10-21) ──────────────────────────────────────────────────────────────
+// The type each organization was given when it was created (lib/org-type.ts), counted from the `orgType` the
+// related link carries. "Other" answers are listed in the person's own words: they are how the team finds the
+// categories the ontology is missing. Same rules as countOrgs: test people, a person's own names, deleted
+// organizations and workspaces are left out.
+
+export interface OrgTypeTally {
+  /** Listed types, most used first. */
+  byType: { label: string; iri: string; count: number }[];
+  /** Organizations whose answer was Other, newest first. */
+  other: { text: string; at: number | null }[];
+  /** Organizations with no type: created before the question was asked, or outside an app that asks it. */
+  noType: number;
+}
+
+export function tallyOrgTypes(links: { key: string; value: string | null }[], testPeople: ReadonlySet<string> = new Set()): OrgTypeTally {
+  type Seen = { kind: string; at: number; type: { iri: string | null; label?: string; other?: string } | null };
+  const orgs = new Map<string, Seen>();
+  for (const l of links) {
+    const [, personRaw, orgRaw] = l.key.split(':');
+    const org = orgRaw?.toLowerCase();
+    if (!org || !ADDRESS.test(org) || testPeople.has(personRaw?.toLowerCase() ?? '')) continue;
+    let v: { kind?: string; relationship?: string; status?: string; createdAt?: number; orgType?: { iri?: unknown; label?: unknown; other?: unknown } } = {};
+    try {
+      v = JSON.parse(l.value ?? '{}') as typeof v;
+    } catch {
+      continue;
+    }
+    if ((v.kind ?? '').toLowerCase() === 'person' || (v.relationship ?? '').toLowerCase() === 'self' || v.status === 'deleted') continue;
+    const t = v.orgType;
+    const type =
+      t && typeof t === 'object'
+        ? typeof t.iri === 'string' && typeof t.label === 'string'
+          ? { iri: t.iri, label: t.label }
+          : t.iri === null && typeof t.other === 'string'
+            ? { iri: null, other: t.other }
+            : null
+        : null;
+    const at = typeof v.createdAt === 'number' ? v.createdAt : Number.POSITIVE_INFINITY;
+    const seen = orgs.get(org);
+    // Any steward's link that carries the type answers for the organization; the earliest link dates it.
+    orgs.set(org, {
+      kind: (seen?.kind ?? v.kind ?? 'org').toLowerCase(),
+      at: Math.min(seen?.at ?? Number.POSITIVE_INFINITY, at),
+      type: seen?.type ?? type,
+    });
+  }
+  const counts = new Map<string, { label: string; iri: string; count: number }>();
+  const other: { text: string; at: number | null }[] = [];
+  let noType = 0;
+  for (const o of orgs.values()) {
+    if (o.kind === 'workspace') continue;
+    if (!o.type) { noType++; continue; }
+    if (o.type.iri === null) { other.push({ text: o.type.other ?? '', at: Number.isFinite(o.at) ? o.at : null }); continue; }
+    const c = counts.get(o.type.iri) ?? { label: o.type.label ?? o.type.iri, iri: o.type.iri, count: 0 };
+    c.count++;
+    counts.set(o.type.iri, c);
+  }
+  return {
+    byType: [...counts.values()].sort((a, b) => b.count - a.count || a.label.localeCompare(b.label)),
+    other: other.sort((a, b) => (b.at ?? 0) - (a.at ?? 0)),
+    noType,
+  };
+}

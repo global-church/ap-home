@@ -369,6 +369,7 @@ export function OnboardingJourney({
           requestedBy: api.enroll.aud,
           grantOrg: api.enroll.grantOrg,
           existingOrg,
+          orgType: api.enroll.orgType,
         });
         if (!created.ok) return fail(created.error, 'grant');
         // THE MISSION REGISTRY step, when the app asked for it — the same one the recognized ceremony runs, so a

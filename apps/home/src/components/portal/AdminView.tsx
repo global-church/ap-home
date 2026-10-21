@@ -6,7 +6,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useSession } from '../../context/session';
 import { PageHead, Section, Stats, Stat, List, Row, Empty, ErrorNote, Note, Button, Meta, SkeletonRows } from '../../ui';
 import { budgetTone, type CostsResult, type CostsView } from '../../lib/azure-costs';
-import type { AccountsView } from '../../../server/connect/admin';
+import type { AccountsView, OrgTypesView } from '../../../server/connect/admin';
 
 type Load<T> = T | null | undefined;
 
@@ -31,6 +31,7 @@ export function AdminView() {
   const { session } = useSession();
   const [accounts, setAccounts] = useState<Load<AccountsView>>(undefined);
   const [costs, setCosts] = useState<Load<CostsResult>>(undefined);
+  const [orgTypes, setOrgTypes] = useState<Load<OrgTypesView>>(undefined);
   const [refused, setRefused] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -39,11 +40,13 @@ export function AdminView() {
     if (!session) return;
     setError(null);
     const q = refresh ? '?refresh=1' : '';
-    const [a, c] = await Promise.all([
+    const [a, c, t] = await Promise.all([
       getJson<AccountsView>(`/connect/admin/accounts${q}`, session.token),
       getJson<CostsResult>(`/connect/admin/azure-costs${q}`, session.token),
+      getJson<OrgTypesView>('/connect/admin/org-types', session.token),
     ]);
     if ((!a.ok && a.status === 403) || (!c.ok && c.status === 403)) { setRefused(true); return; }
+    if (t.ok) setOrgTypes(t.body); else setOrgTypes(null);
     if (a.ok) setAccounts(a.body); else { setAccounts(null); setError(a.error); }
     if (c.ok) setCosts(c.body); else { setCosts(null); setError(c.error); }
   }, [session]);
@@ -69,6 +72,7 @@ export function AdminView() {
       />
       {error && <ErrorNote>{error}</ErrorNote>}
       <AccountsSection a={accounts} />
+      <OrgTypesSection t={orgTypes} />
       <CostsSection c={costs} />
     </>
   );
@@ -102,6 +106,42 @@ function AccountsSection({ a }: { a: Load<AccountsView> }) {
           {a.testAccounts.toLocaleString()} test {a.testAccounts === 1 ? 'identity is' : 'identities are'} not counted here: people who signed in as name+gcidtest@…, and organizations only they belong to.
         </Note>
       )}
+    </Section>
+  );
+}
+
+/** The type each organization was given when it was created, and the "Other" answers in the person's own words:
+ *  the list the team reads to decide what the ontology is missing (2026-10-21). */
+function OrgTypesSection({ t }: { t: Load<OrgTypesView> }) {
+  const title = 'Organization types';
+  if (t === undefined) return <Section title={title}><SkeletonRows rows={2} lead /></Section>;
+  if (t === null) return <Section title={title}><Empty title="Organization types are unavailable" /></Section>;
+  const typed = t.byType.reduce((n, x) => n + x.count, 0) + t.other.length;
+  return (
+    <Section title={title} aside={<Meta>as of {when(t.asOf)}</Meta>} testId="admin-org-types">
+      <Stats>
+        <Stat label="with a type" value={typed.toLocaleString()} />
+        <Stat label="answered Other" value={t.other.length.toLocaleString()} testId="admin-org-types-other-count" />
+        <Stat label="no type yet" value={t.noType.toLocaleString()} hint="created before the question was asked" />
+      </Stats>
+      {t.byType.length > 0 && (
+        <List>
+          {t.byType.map((x) => (
+            <Row key={x.iri} title={x.label} meta={`${x.count.toLocaleString()} ${x.count === 1 ? 'organization' : 'organizations'}`} />
+          ))}
+        </List>
+      )}
+      <h3 className="subhead" style={{ marginTop: '1rem' }}>Other answers</h3>
+      {t.other.length === 0 ? (
+        <Note>No one has answered Other yet.</Note>
+      ) : (
+        <List>
+          {t.other.map((o, i) => (
+            <Row key={`${o.at ?? 'x'}-${i}`} title={o.text} meta={o.at ? when(o.at) : undefined} testId={`admin-org-type-other-${i}`} />
+          ))}
+        </List>
+      )}
+      <Note>Other answers are what people typed when no listed type fit. Use them to decide what the organization-type list in the ontology is missing.</Note>
     </Section>
   );
 }
