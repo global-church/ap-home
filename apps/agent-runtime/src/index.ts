@@ -268,6 +268,7 @@ export function buildAuditSink(env: Env, opts: { deferVia?: { waitUntil(p: Promi
   }
   return composeSinks(console);
 }
+RelayQueueDO.auditSinkFor = (env) => buildAuditSink(env as Env);
 
 export { SessionStoreDO };
 export { A2aTaskDO } from './a2a-task-do.js';
@@ -275,7 +276,10 @@ export { InteractionsDO } from './interactions-do.js';
 export { HuddleRoomDO } from './huddle-room-do.js';
 export { ProviderMeterDO } from './provider-meter-do.js';
 export { ExperimentDO } from './experiment-do.js';
+import { RelayQueueDO } from './relay-queue.js';
 import { reportToSentry } from './sentry-report.js';
+// GC 2026-10-20 - the relay queue: one sender for the relay account, batching userOps (relay-queue.ts).
+export { RelayQueueDO };
 
 export interface Env {
   /** Perf (2026-10-02) — agents whose cold read path the `scheduled` cron keeps warm (comma-separated SAs).
@@ -306,9 +310,12 @@ export interface Env {
   /** Spec 415 A5 — the Lab's experiments: one object per plan id, a comparison run on this deployment one case per
    *  alarm (experiment-do.ts). Unbound ⇒ `/harness/experiments` answers 503 and comparisons run from the CLI only. */
   EXPERIMENTS?: DurableObjectNamespace;
+  /** GC 2026-10-20 - the relay queue (relay-queue.ts): `on` routes userOp submissions through RELAY_QUEUE_DO. */
+  RELAY_QUEUE?: string;
   /** GC 2026-10-21 - Sentry (sentry-report.ts): the project's DSN, and `production` or `staging`. Unset DSN -> off. */
   SENTRY_DSN?: string;
   SENTRY_ENVIRONMENT?: string;
+  RELAY_QUEUE_DO?: DurableObjectNamespace<RelayQueueDO>;
   /** Spec 388 — the third offered provider: OpenAI's cheapest tool-calling model, between the free tier
    *  and Haiku. */
   OPENAI_API_KEY?: string;
@@ -5556,12 +5563,23 @@ function accountClient(env: Env): AgentAccountClient {
   // already accepts. GC, 2026-10-14; the clean fix is an option on AgentAccountClient upstream.
   const bundler = () =>
     new BundlerClient({ rpcUrl: env.RPC_URL, entryPoint: env.ENTRY_POINT as Address, pollingIntervalMs: receiptPollMs(env) });
+  // GC 2026-10-20 - RELAY_QUEUE=on routes every submission through ONE Durable Object that batches userOps into
+  // shared handleOps transactions and is the only sender from the relay account on this path (relay-queue.ts).
+  // Off (the default) or unbound: exactly the single-op send below. Every caller uses the 'direct-deploy' relay key,
+  // which is the key the queue signs with, so the bundlerAccount argument is the same account either way.
+  const queued = env.RELAY_QUEUE === 'on' && env.RELAY_QUEUE_DO
+    ? env.RELAY_QUEUE_DO.get(env.RELAY_QUEUE_DO.idFromName('relay'))
+    : null;
+  const send = (userOp: Parameters<typeof client.submitDeployUserOp>[0], bundlerAccount: Parameters<typeof client.submitDeployUserOp>[1]) =>
+    queued
+      ? (queued.submit(userOp as never) as unknown as ReturnType<ReturnType<typeof bundler>['sendUserOps']>)
+      : bundler().sendUserOps([userOp], bundlerAccount.address, bundlerAccount);
   client.submitDeployUserOp = async (userOp, bundlerAccount) => ({
     deployedAddress: userOp.sender,
-    receipt: await bundler().sendUserOps([userOp], bundlerAccount.address, bundlerAccount),
+    receipt: await send(userOp, bundlerAccount),
   });
   client.submitCallUserOp = async (userOp, bundlerAccount) => ({
-    receipt: await bundler().sendUserOps([userOp], bundlerAccount.address, bundlerAccount),
+    receipt: await send(userOp, bundlerAccount),
   });
   return client;
 }

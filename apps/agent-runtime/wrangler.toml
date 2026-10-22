@@ -27,6 +27,9 @@ bindings = [
   { name = "PROVIDER_METER", class_name = "ProviderMeterDO" },
   # Spec 415 A5 — the Lab's experiments, one object per plan id (experiment-do.ts).
   { name = "EXPERIMENTS", class_name = "ExperimentDO" },
+  # GC 2026-10-20 - the relay queue: one sender for the relay account, batching userOps (relay-queue.ts).
+  # Inert until RELAY_QUEUE=on.
+  { name = "RELAY_QUEUE_DO", class_name = "RelayQueueDO" },
 ]
 
 [[migrations]]
@@ -71,6 +74,11 @@ new_sqlite_classes = ["RuntimeContainer"]
 [[migrations]]
 tag = "v7"
 new_sqlite_classes = ["ExperimentDO"]
+
+# GC 2026-10-20 - the relay queue object (relay-queue.ts).
+[[migrations]]
+tag = "v8"
+new_sqlite_classes = ["RelayQueueDO"]
 
 # ── FAITHNET (Azure faithchain 34348) — gcp-kms custody, Home on faithnet.me, backend on faithnet.io ──
 [env.faithnet]
@@ -332,6 +340,9 @@ bindings = [
   { name = "PROVIDER_METER", class_name = "ProviderMeterDO" },
   # Spec 415 A5 — the Lab's experiments, one object per plan id (experiment-do.ts).
   { name = "EXPERIMENTS", class_name = "ExperimentDO" },
+  # GC 2026-10-20 - the relay queue: one sender for the relay account, batching userOps (relay-queue.ts).
+  # Inert until RELAY_QUEUE=on.
+  { name = "RELAY_QUEUE_DO", class_name = "RelayQueueDO" },
   { name = "SA_BUDGET", class_name = "SmartAgentBudgetDO", script_name = "demo-mcp-faithnet" },
   # Spec 400 W1c — one runtime Container per member, named by the member's agent address.
   { name = "RUNTIME", class_name = "RuntimeContainer" },
