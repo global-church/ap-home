@@ -591,6 +591,9 @@ export async function createOrganization(
     /** A NEW organization's type (lib/org-type.ts): written into its `org.profile` and returned on the payload so
      *  the related link carries it for Admin. Ignored on the existing-org path. */
     orgType?: OrgTypeV1;
+    /** A NEW organization's display name ("Richmond Gather"): its `org.profile` displayName, and returned on the
+     *  payload so the related link carries it for Admin. Without it the handle is the display name, as before. */
+    orgDisplayName?: string;
     onProgress?: (p: { step: number; total: number; label: string; hint?: string }) => void;
     /** The organization is deployed and its vault bound — the point past which a retry must REUSE it rather
      *  than deploy another (src/lib/org-deploy-stash.ts). Not called on the existing-org path. */
@@ -806,7 +809,7 @@ export async function createOrganization(
         if (!ix.ok) console.warn('[org-create] interactions grant not provisioned:', ix.error);
       }),
       x.stewardshipDelegation
-        ? vaultWriteWithDelegation(x.stewardshipDelegation, 'org.profile', { v: 1, displayName: x.childName, ...(opts.orgType ? { organizationType: opts.orgType } : {}) }).catch((e: unknown) =>
+        ? vaultWriteWithDelegation(x.stewardshipDelegation, 'org.profile', { v: 1, displayName: opts.orgDisplayName || x.childName, ...(opts.orgType ? { organizationType: opts.orgType } : {}) }).catch((e: unknown) =>
             console.warn('[org-create] org profile seed failed:', e),
           )
         : Promise.resolve(),
@@ -859,6 +862,7 @@ export async function createOrganization(
       operationalDelegation: x.operationalDelegation,  // org→app service agent (submit intents)
       readGrantDelegation: x.readGrantDelegation,      // org→app workspace (read one record family)
       ...(opts.orgType ? { orgType: opts.orgType } : {}), // the type the person chose (org.profile has the record)
+      ...(opts.orgDisplayName ? { displayName: opts.orgDisplayName } : {}), // the name they typed (likewise)
     },
     grant: x.delegation,
   };

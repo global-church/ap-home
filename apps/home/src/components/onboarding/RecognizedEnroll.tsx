@@ -773,6 +773,7 @@ export function RecognizedEnroll({ api, onUnrecognized }: { api: EnrollApi; onUn
             grantOrg: enroll.grantOrg,
             existingOrg,
             orgType: enroll.orgType,
+            orgDisplayName: enroll.orgDisplayName,
             signAsOrg: orgSel?.asSteward,
             onDeployed: (o) => rememberDeployedOrg(sessionStorage, stashKey, o),
             onProgress: setGrantProgress,

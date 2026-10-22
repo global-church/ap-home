@@ -39,6 +39,14 @@ export function checkOrgType(v: unknown): OrgTypeV1 | null {
   return { iri: r.iri, label, ...onto };
 }
 
+/** A NEW organization's display name as the app's person typed it (`org_name`, 2026-10-22): "Richmond Gather", where
+ *  the handle is richmond-gather.org. Whitespace collapsed, control characters dropped, 100 characters at most. */
+export function checkOrgDisplayName(v: unknown): string | null {
+  // eslint-disable-next-line no-control-regex
+  const s = typeof v === 'string' ? clean(v.replace(/[\u0000-\u001f\u007f]/g, ''), 100) : '';
+  return s || null;
+}
+
 /** `org_type` from the authorize URL: base64url JSON, capped. */
 export function parseOrgTypeParam(param: string | null | undefined): OrgTypeV1 | null {
   if (!param || param.length > 2000) return null;

@@ -140,6 +140,7 @@ export function enrollReqToQuery(e: EnrollReq): string {
   if (e.orgBase) p.set('org_base', e.orgBase);
   if (e.purpose) p.set('org_purpose', e.purpose);
   if (e.orgType) p.set('org_type', orgTypeParam(e.orgType));
+  if (e.orgDisplayName) p.set('org_name', e.orgDisplayName);
   if (e.existingOrg) p.set('existing_org', e.existingOrg);
   if (e.grantOrg) p.set('grant_org', e.grantOrg);
   if (e.roleOfferRaw) p.set('role_offer', e.roleOfferRaw);

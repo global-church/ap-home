@@ -20,7 +20,7 @@
 // the PKCE exchange.
 
 import { mintIdToken, newAuthCode } from '@agenticprimitives/connect';
-import { checkOrgType } from '../../src/lib/org-type';
+import { checkOrgDisplayName, checkOrgType } from '../../src/lib/org-type';
 import { toCanonicalAgentId } from '@agenticprimitives/identity-directory-adapters';
 import { getServer, json, resolveOrigin, type FnContext } from '../_lib/server-broker';
 import { verifyDelegation, type IncomingDelegation } from '../_lib/verify-delegation';
@@ -215,6 +215,8 @@ export const onRequestPost = async ({ request, env }: FnContext): Promise<Respon
     readGrantDelegation?: unknown;
     /** Global.Church 2026-10-21: the type chosen for a NEW organization (lib/org-type.ts). Re-checked here. */
     orgType?: unknown;
+    /** 2026-10-22: a NEW organization's display name (lib/org-type.ts checkOrgDisplayName). Re-checked here. */
+    displayName?: unknown;
   } | null;
   if (orgPayload?.orgAgent && orgPayload.person) {
     const person = orgPayload.person.toLowerCase();
@@ -251,6 +253,8 @@ export const onRequestPost = async ({ request, env }: FnContext): Promise<Respon
       ...(orgPayload.governor ? { governor: String(orgPayload.governor).toLowerCase() } : existing.governor ? { governor: existing.governor } : {}),
       // The organization's type rides the link for Admin's count (org.profile in the org's vault is the record).
       ...(checkOrgType(orgPayload.orgType) ? { orgType: checkOrgType(orgPayload.orgType) } : existing.orgType ? { orgType: existing.orgType } : {}),
+      // Its display name, for Admin's list (org.profile is the record); the handle stays in orgName.
+      ...(checkOrgDisplayName(orgPayload.displayName) ? { displayName: checkOrgDisplayName(orgPayload.displayName) } : existing.displayName ? { displayName: existing.displayName } : {}),
       createdAt: existing.createdAt ?? Date.now(),
     };
     await env.AUTH_CODES.put(`related:${person}:${org}`, JSON.stringify(link));
