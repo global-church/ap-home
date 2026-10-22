@@ -45,7 +45,7 @@ import { connectWallet, personalSign } from '../lib/wallet';
 import { isDemoCustodyHome, demoCustodySignHash } from '../lib/persona-custody';
 import { writeOrganizationMembership } from '../lib/membership-write';
 import { getClient } from '../lib/oidc-clients';
-import { buildApprovedSiteDelegation, buildApprovedOperationalIntentDelegation, buildApprovedOrgReadDelegation, issueOrgReadDelegation, buildApprovedSelfVaultGrant, buildApprovedSessionDelegation, buildApprovedInboxDeliveryDelegation, buildApprovedInteractionsDelegation, issueSessionDelegation, issueSiteDelegation, issuePaymentDelegation, issueInboxDeliveryDelegation, issueInteractionsDelegation, issueServiceAgentWireDelegation, OPEN_DELEGATION, ORG_INTERACTIONS_SESSION_LEAF_TTL_SECONDS, ORG_INTERACTIONS_SESSION_LEAF_LADDER_RUNGS, PERSON_INTERACTIONS_SESSION_LEAF_TTL_SECONDS, toWire, buildVaultKeyAuthorization, APPROVED_HASH_SENTINEL, type DelegationWire, type SelfVaultGrantConfig, type VaultKeyCeremonyParams } from '../lib/delegation';
+import { issueSelfVaultGrant, buildApprovedSiteDelegation, buildApprovedOperationalIntentDelegation, buildApprovedOrgReadDelegation, issueOrgReadDelegation, buildApprovedSelfVaultGrant, buildApprovedSessionDelegation, buildApprovedInboxDeliveryDelegation, buildApprovedInteractionsDelegation, issueSessionDelegation, issueSiteDelegation, issuePaymentDelegation, issueInboxDeliveryDelegation, issueInteractionsDelegation, issueServiceAgentWireDelegation, OPEN_DELEGATION, ORG_INTERACTIONS_SESSION_LEAF_TTL_SECONDS, ORG_INTERACTIONS_SESSION_LEAF_LADDER_RUNGS, PERSON_INTERACTIONS_SESSION_LEAF_TTL_SECONDS, toWire, buildVaultKeyAuthorization, APPROVED_HASH_SENTINEL, type DelegationWire, type SelfVaultGrantConfig, type VaultKeyCeremonyParams } from '../lib/delegation';
 import { vaultWriteWithDelegation, vaultReadWithDelegation } from '../lib/vault-client';
 import { saveStandingGrant, loadStandingGrant, saveStandingGrantWithSelfVault, loadStandingGrantWithSelfVault } from '../lib/grant-cache';
 import { DELIVERY_SERVICE_SA, INTERACTIONS_SERVICE_SA, MCP_SERVER_ID } from '../lib/inbox-delivery';
@@ -836,6 +836,9 @@ export async function createOrganization(
       membership: (x.membershipDelegation as DelegationWire | null) ?? null,
     });
   }
+  // The org's public naming write ran beside the setup above (connect-client createOrganizationWithGoogle); it
+  // must land before this tab leaves for the relying app.
+  await x.pendingWrites;
   say?.({ step: 5, total: 5, label: 'Handing access to the app…' });
   // ADR-0025: the `org` payload carries the private credential + the person SA so the
   // server's /oidc/grant step can write the vault; the relying app receives only the org
@@ -1114,26 +1117,47 @@ export async function givePermission(
       if (standing) return { ok: true, grant: standing.wire, selfVaultGrant: standing.selfVaultGrant, reused: true };
     }
     const signHash = await signHashFor(via, home.address, auth);
-    // B4 — batch the person-SA grants (site + the DEL-001 session leaf) via APPROVED-HASH: build both as
-    // `0x03` leaves and pre-approve their digests in ONE userOp on the person SA (one credential prompt),
-    // instead of a separate off-chain signature per leaf. Only the PUBLIC `0x03` leaves cross back to the
-    // relying app; its session private key never leaves its origin. The verifier validates each leaf via the
-    // person SA's ERC-1271 `0x03` branch (UniversalSignatureValidator → ApprovedHashRegistry) — identical to
-    // the org-create outbound grants, and to a signed leaf for the binding checks. (spec 253 + 270 v4 W2.)
-    const siteApp = buildApprovedSiteDelegation(home.address, delegate);
-    // Spec 408 §2.1 — the relying app's session key presents the person's delegations to THAT app's SA only.
-    const sessionApp = sessionKeyAddress ? buildApprovedSessionDelegation(home.address, sessionKeyAddress, [delegate]) : undefined;
-    // spec 345 — the self-vault grant folds into the SAME batch: delegator = delegate = home.address,
-    // never touching org/stewardship machinery. NEVER call projectStewardRelationshipToVault for this.
-    const selfVaultApp = selfVaultScope ? buildApprovedSelfVaultGrant(home.address, selfVaultScope) : undefined;
-    const approve = await approveGrantHashes(
-      home.address,
-      signHash,
-      [siteApp.digest, sessionApp?.digest, selfVaultApp?.digest].filter((d): d is Hex => Boolean(d)),
-    );
-    if (!approve.ok) return { ok: false, error: `grant approval failed: ${approve.error}` };
-    const delegation = siteApp.delegation;
-    const sessionDelegation = sessionApp ? toWire(sessionApp.delegation) : undefined;
+    let delegation: Awaited<ReturnType<typeof issueSiteDelegation>>;
+    let sessionDelegation: DelegationWire | undefined;
+    let selfVaultDelegation: Awaited<ReturnType<typeof issueSiteDelegation>> | undefined;
+    if (isKmsVia(via)) {
+      // KMS custody (email / phone / Google — GC, 2026-10-22): the custodian SIGNS each grant, no transaction. The
+      // approved-hash batch in the other branch exists to spare a passkey one prompt per grant; a KMS custodian has
+      // no prompt, and its approval userOp was a 4–5 s chain wait on every sign-in and again on every org-create
+      // return (the single-host timeline, 2026-10-21). /oidc/grant and the relying app verify a signed wire through
+      // the same ERC-1271 call as a 0x03 one, and the sign-in self-grant (projectStewardRelationshipToVault) has
+      // always been signed this way. Three signatures in parallel: one /sign round trip each.
+      const [site, leaf, selfVault] = await Promise.all([
+        issueSiteDelegation(home.address, delegate, signHash),
+        sessionKeyAddress ? issueSessionDelegation(home.address, sessionKeyAddress, signHash, [delegate]) : Promise.resolve(undefined),
+        selfVaultScope ? issueSelfVaultGrant(home.address, selfVaultScope, signHash) : Promise.resolve(undefined),
+      ]);
+      delegation = site;
+      sessionDelegation = leaf ? toWire(leaf) : undefined;
+      selfVaultDelegation = selfVault;
+    } else {
+      // B4 — batch the person-SA grants (site + the DEL-001 session leaf) via APPROVED-HASH: build both as
+      // `0x03` leaves and pre-approve their digests in ONE userOp on the person SA (one credential prompt),
+      // instead of a separate off-chain signature per leaf. Only the PUBLIC `0x03` leaves cross back to the
+      // relying app; its session private key never leaves its origin. The verifier validates each leaf via the
+      // person SA's ERC-1271 `0x03` branch (UniversalSignatureValidator → ApprovedHashRegistry) — identical to
+      // the org-create outbound grants, and to a signed leaf for the binding checks. (spec 253 + 270 v4 W2.)
+      const siteApp = buildApprovedSiteDelegation(home.address, delegate);
+      // Spec 408 §2.1 — the relying app's session key presents the person's delegations to THAT app's SA only.
+      const sessionApp = sessionKeyAddress ? buildApprovedSessionDelegation(home.address, sessionKeyAddress, [delegate]) : undefined;
+      // spec 345 — the self-vault grant folds into the SAME batch: delegator = delegate = home.address,
+      // never touching org/stewardship machinery. NEVER call projectStewardRelationshipToVault for this.
+      const selfVaultApp = selfVaultScope ? buildApprovedSelfVaultGrant(home.address, selfVaultScope) : undefined;
+      const approve = await approveGrantHashes(
+        home.address,
+        signHash,
+        [siteApp.digest, sessionApp?.digest, selfVaultApp?.digest].filter((d): d is Hex => Boolean(d)),
+      );
+      if (!approve.ok) return { ok: false, error: `grant approval failed: ${approve.error}` };
+      delegation = siteApp.delegation;
+      sessionDelegation = sessionApp ? toWire(sessionApp.delegation) : undefined;
+      selfVaultDelegation = selfVaultApp?.delegation;
+    }
     // x402 payment delegation — issued from the TREASURY, signed by the same credential, in the same
     // ceremony. delegate = OPEN (push: reader redeems) or the payee (pull: provider redeems).
     const payDeleg = payment
@@ -1191,9 +1215,9 @@ export async function givePermission(
     if (!sessionKeyAddress && !payment && !selfVaultScope) {
       saveStandingGrant(home.address, delegate, wire, Date.now() + 365 * 86_400_000);
     }
-    if (!sessionKeyAddress && !payment && selfVaultScope && reuse?.reuseWithSelfVault && selfVaultApp) {
+    if (!sessionKeyAddress && !payment && selfVaultScope && reuse?.reuseWithSelfVault && selfVaultDelegation) {
       // Both grants carry 365-day validity; the cache's own 30-day margin (grant-cache.ts) applies on read.
-      saveStandingGrantWithSelfVault(home.address, delegate, selfVaultScope, wire, toWire(selfVaultApp.delegation), Date.now() + 365 * 86_400_000);
+      saveStandingGrantWithSelfVault(home.address, delegate, selfVaultScope, wire, toWire(selfVaultDelegation), Date.now() + 365 * 86_400_000);
     }
     return {
       ok: true,
@@ -1202,7 +1226,7 @@ export async function givePermission(
       paymentDelegation: payDeleg ? toWire(payDeleg) : undefined,
       pullDelegation: pullDeleg ? toWire(pullDeleg) : undefined,
       settlementHash,
-      selfVaultGrant: selfVaultApp ? toWire(selfVaultApp.delegation) : undefined,
+      selfVaultGrant: selfVaultDelegation ? toWire(selfVaultDelegation) : undefined,
     };
   } catch (e) {
     // Surface the REAL failure. Wallet providers (EIP-1193) and some libs throw plain objects/strings

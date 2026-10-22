@@ -1270,6 +1270,9 @@ export interface CreatedAgent {
   proofHash: Hex;
   /** Optional org → broker-org delegation (so a broker can later list its orgs). */
   brokerDelegation?: DelegationWire;
+  /** A best-effort write still in flight from the org (its public naming records): awaited before the ceremony
+   *  returns, never on the critical path of the setup that follows the deploy (2026-10-22). */
+  pendingWrites?: Promise<void>;
   /** The org → app-service-agent Operational Intent grant, when the app declares a service SA. */
   operationalDelegation?: DelegationWire;
   /** The org → app-workspace READ grant (whitelabel `org_read_grant`), when the app declares one. */
@@ -2136,14 +2139,22 @@ export async function createOrganizationWithGoogle(
   const childAgent = b.org;
   const personAgent = b.person;
   const childName = b.name ?? picked.name;
-  try {
-    const signHash = googleSignHash(childAgent, sessionToken);
-    const writes = buildNameRecordCalls(picked.node, childAgent, childDiscoveryRecords(base, cOpts));
-    const wr = await executeCalls(childAgent, signHash, writes);
-    if (!wr.ok) console.warn('[org-create] public naming metadata write failed:', wr.error);
-  } catch (e) {
-    console.warn('[org-create] public naming metadata write failed:', e);
-  }
+  // The public naming metadata (resolver addr / kind / display name) is its own userOp from the org: best-effort,
+  // and from 2026-10-22 NOT awaited here — it was a 3–5 s chain wait on the critical path of every org-create. It
+  // runs beside the org's vault and plane setup (nothing there reads these records, and nothing else sends a
+  // userOp from the org SA in that window); createOrganization awaits it before the ceremony returns, so the tab
+  // never leaves it behind.
+  const node = picked.node; // narrowed above; a closure does not keep that narrowing
+  const pendingWrites = (async () => {
+    try {
+      const signHash = googleSignHash(childAgent, sessionToken);
+      const writes = buildNameRecordCalls(node, childAgent, childDiscoveryRecords(base, cOpts));
+      const wr = await executeCalls(childAgent, signHash, writes);
+      if (!wr.ok) console.warn('[org-create] public naming metadata write failed:', wr.error);
+    } catch (e) {
+      console.warn('[org-create] public naming metadata write failed:', e);
+    }
+  })();
   const relationshipType = RELATIONSHIP_TYPE.HAS_GOVERNANCE_OVER as RelationshipType;
   const edgeId = computeEdgeId(personAgent, childAgent, relationshipType);
   const purpose = cOpts.purpose ?? 'related-org';
@@ -2185,6 +2196,7 @@ export async function createOrganizationWithGoogle(
       membershipDelegation: undefined, // deferred (person→org), same as the passkey path
       stewardshipDelegation: b.stewardshipDelegation,
       readGrantDelegation,
+      pendingWrites,
     },
   };
 }
