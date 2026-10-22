@@ -29,7 +29,7 @@ import { DurableObject } from 'cloudflare:workers';
 import { createPublicClient, http, type Address, type LocalAccount, type TransactionReceipt } from 'viem';
 import { BundlerClient, entryPointAbi, unpackGasLimits, type PackedUserOperation } from '@agenticprimitives/agent-account';
 
-import { chainFor, receiptPollMs } from './chain.js';
+import { chainFor, receiptPollMs, withPromptReceipts } from './chain.js';
 import { BatchingQueue, failedOpIndex } from './relay-queue-core.js';
 import { getRelayerAccount, type RelayerEnv } from './relayer.js';
 
@@ -99,7 +99,7 @@ export class RelayQueueDO extends DurableObject<RelayQueueEnv> {
 
   private async send(ops: readonly PackedUserOperation[]): Promise<TransactionReceipt> {
     const account = await this.relayAccount();
-    const bundler = new BundlerClient({ rpcUrl: this.env.RPC_URL ?? '', entryPoint: this.entryPoint(), pollingIntervalMs: receiptPollMs(this.env) });
+    const bundler = withPromptReceipts(new BundlerClient({ rpcUrl: this.env.RPC_URL ?? '', entryPoint: this.entryPoint(), pollingIntervalMs: receiptPollMs(this.env) }), receiptPollMs(this.env));
     return (await bundler.sendUserOps([...ops], account.address, account)) as TransactionReceipt;
   }
 

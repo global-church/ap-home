@@ -70,7 +70,7 @@ import {
   parseUint256Decimal,
   parseUint48,
 } from './validate';
-import { chainFor, receiptPollMs } from './chain';
+import { chainFor, receiptPollMs, withPromptReceipts } from './chain';
 import {
   AgentAccountClient,
   BundlerClient,
@@ -5562,7 +5562,7 @@ function accountClient(env: Env): AgentAccountClient {
   // are the package's own bodies with the chain's cadence (receiptPollMs) passed to the BundlerClient it
   // already accepts. GC, 2026-10-14; the clean fix is an option on AgentAccountClient upstream.
   const bundler = () =>
-    new BundlerClient({ rpcUrl: env.RPC_URL, entryPoint: env.ENTRY_POINT as Address, pollingIntervalMs: receiptPollMs(env) });
+    withPromptReceipts(new BundlerClient({ rpcUrl: env.RPC_URL, entryPoint: env.ENTRY_POINT as Address, pollingIntervalMs: receiptPollMs(env) }), receiptPollMs(env));
   // GC 2026-10-20 - RELAY_QUEUE=on routes every submission through ONE Durable Object that batches userOps into
   // shared handleOps transactions and is the only sender from the relay account on this path (relay-queue.ts).
   // Off (the default) or unbound: exactly the single-op send below. Every caller uses the 'direct-deploy' relay key,

@@ -38,3 +38,45 @@ export function chainFor(env: { CHAIN_ID?: string; RPC_URL?: string }): Chain {
     })
   );
 }
+
+type ReceiptArgs = { hash: `0x${string}`; pollingInterval?: number } & Record<string, unknown>;
+type ReceiptClient = {
+  waitForTransactionReceipt: (args: ReceiptArgs) => Promise<unknown>;
+  getTransactionReceipt: (args: { hash: `0x${string}` }) => Promise<unknown>;
+};
+
+/**
+ * A receipt wait that cannot sleep through an idle minute (2026-10-22). viem's waitForTransactionReceipt looks for
+ * the receipt when it sees a NEW block. A transaction mined the instant the wait began is missed on the first look,
+ * and the next block on an idle gcchain is the empty-block period away (60 s): seen as a 64 s account creation on
+ * staging once blocks went to 1 s, where a transaction often lands that fast. This asks for the receipt directly
+ * every `pollMs` as well, beside viem's own wait (which still answers a replaced transaction, as the bundler relies
+ * on), and takes whichever answers first.
+ */
+export function withPromptReceipts<T extends object>(client: T, pollMs: number): T {
+  const pc = (client as unknown as { publicClient?: ReceiptClient }).publicClient;
+  if (!pc || typeof pc.waitForTransactionReceipt !== 'function') return client;
+  const original = pc.waitForTransactionReceipt.bind(pc);
+  pc.waitForTransactionReceipt = (args: ReceiptArgs) =>
+    new Promise((resolve, reject) => {
+      let done = false;
+      original(args).then(
+        (r) => { if (!done) { done = true; resolve(r); } },
+        (e) => { if (!done) { done = true; reject(e); } },
+      );
+      void (async () => {
+        const every = args.pollingInterval ?? pollMs;
+        while (!done) {
+          await new Promise((r) => setTimeout(r, every));
+          if (done) return;
+          try {
+            const r = await pc.getTransactionReceipt({ hash: args.hash });
+            if (r && !done) { done = true; resolve(r); }
+          } catch {
+            /* not mined yet (viem throws TransactionReceiptNotFoundError), or a read that failed: ask again */
+          }
+        }
+      })();
+    });
+  return client;
+}
