@@ -1990,6 +1990,7 @@ input:not([type=checkbox]):not([type=radio]), select, textarea { border-color: v
 .signin-intro p{margin:0;font-size:.95rem;line-height:1.5;opacity:.85}
 
 /* Admin → Organizations (2026-10-22) */
+.ui-tabs + .ui-toolbar { margin-top: 16px; }
 .admin-orgs__app { display: inline-flex; align-items: center; gap: .4rem; font-size: 13px; color: var(--color-text-muted); }
 .admin-orgs__app select { font: inherit; color: var(--color-text-primary); padding: 5px 8px; border: 1px solid var(--color-border-strong); border-radius: 8px; background: var(--color-surface); }
 .admin-orgs__search { flex: 1 1 260px; min-width: 0; }
