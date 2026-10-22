@@ -9296,6 +9296,8 @@ async function forwardMcpToken(args: {
   invocationProof?: AgenticInvocationProofV1;
   auditSink: ReturnType<typeof buildAuditSink>;
   correlationId: string;
+  /** Server-Timing marks from the caller, reported with the vault call's own (2026-10-22). */
+  serverTiming?: string;
 }): Promise<Response> {
   const requestBody = JSON.stringify({
     token: args.token,
@@ -9329,10 +9331,14 @@ async function forwardMcpToken(args: {
     },
     body: requestBody,
   };
+  const tVault = performance.now();
   const mcpRes = args.env.MCP
     ? await args.env.MCP.fetch(new Request(`https://internal/tools/${args.toolName}`, reqInit))
     : await fetch(`${args.env.MCP_URL}/tools/${args.toolName}`, reqInit);
   const mcpBody = await mcpRes.text();
+  // The vault's own breakdown rides along, its names prefixed, so one header shows the whole op.
+  const upstream = (mcpRes.headers.get('server-timing') ?? '').split(',').map((p) => p.trim()).filter(Boolean).map((p) => `v_${p}`);
+  const serverTiming = [args.serverTiming, `vault;dur=${(performance.now() - tVault).toFixed(0)}`, ...upstream].filter(Boolean).join(', ');
   if (!mcpRes.ok) {
     let detail = mcpBody;
     let error = `mcp_${mcpRes.status}`;
@@ -9348,7 +9354,7 @@ async function forwardMcpToken(args: {
   }
   return new Response(mcpBody, {
     status: mcpRes.status,
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'Server-Timing': serverTiming },
   });
 }
 
@@ -9584,7 +9590,12 @@ export async function callMcpToolWithProof(args: {
 }): Promise<Response> {
   const auditSink = buildAuditSink(args.env);
   const correlationId = crypto.randomUUID();
+  // Server-Timing (2026-10-22): where a vault op's time goes before the vault is even asked.
+  const marks: string[] = [];
+  let tStep = performance.now();
+  const mark = (name: string) => { marks.push(`${name};dur=${(performance.now() - tStep).toFixed(0)}`); tStep = performance.now(); };
   const signer = await interactionsSessionAccount(args.env);
+  mark('signer');
   const signRaw = signer.sign; // the KMS viem account implements raw-digest sign (kms-viem-account.ts)
   if (!signRaw) throw new Error('interactions-session KMS account lacks raw-digest sign (invocation proof, W3)');
   const principal = args.delegation.delegator as Address;
@@ -9596,6 +9607,7 @@ export async function callMcpToolWithProof(args: {
     auditSink,
     correlationId,
   });
+  mark('token');
   // The proof `args` MUST be the EXACT handler arg object demo-mcp reconstructs (`{ args: <toolArgs> }`) so
   // the argumentsHash matches after withDelegation strips the token/invocationProof envelope (spec 287).
   const now = Date.now();
@@ -9612,6 +9624,7 @@ export async function callMcpToolWithProof(args: {
     expiresAt: now + 60_000,
     sign: (digest) => signRaw({ hash: digest }),
   });
+  mark('proof');
   return forwardMcpToken({
     env: args.env,
     toolName: args.toolName,
@@ -9620,6 +9633,7 @@ export async function callMcpToolWithProof(args: {
     toolArgs,
     auditSink,
     correlationId,
+    serverTiming: marks.join(', '),
   });
 }
 
