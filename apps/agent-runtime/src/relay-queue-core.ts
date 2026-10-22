@@ -43,7 +43,7 @@ export const MAX_BATCH_GAS = 16_000_000n;
 export const HANDLE_OPS_BASE_GAS = 100_000n;
 export const PER_OP_OVERHEAD_GAS = 150_000n;
 /** When the queue was idle, how long the first op waits for company before the send starts. */
-export const GATHER_MS = 300;
+export const GATHER_MS = 50; // 300 until 2026-10-22: a burst batches anyway while a send is in flight; the idle wait was 0.25 s per write
 
 interface Waiter<Op, R> {
   readonly op: Op;
