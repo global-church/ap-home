@@ -2002,3 +2002,5 @@ input:not([type=checkbox]):not([type=radio]), select, textarea { border-color: v
 .admin-orgs__table td { padding: 9px 10px; border-bottom: 1px solid var(--color-border); vertical-align: top; color: var(--color-text-body); }
 .admin-orgs__table td a { color: inherit; text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }
 .admin-orgs__table td:nth-child(4), .admin-orgs__table td:nth-child(5) { white-space: nowrap; }
+.admin-orgs__org-contact { margin-bottom: 6px; }
+.admin-orgs__managed { margin-top: 4px; }

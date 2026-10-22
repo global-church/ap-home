@@ -13,6 +13,8 @@ const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
 
 /** The filter key for a row's type: an ontology IRI, 'other', or 'none'. */
 const typeKey = (o: OrganizationRow) => (!o.type ? 'none' : o.type.iri === null ? 'other' : o.type.iri);
+/** Does this organization have any email to reach it by: its own contact, or a manager's. */
+const reachable = (o: OrganizationRow) => !!o.orgContact || o.contacts.some((c) => c.email);
 const typeText = (o: OrganizationRow) => (!o.type ? '' : o.type.iri === null ? `Other: ${o.type.other ?? ''}` : o.type.label ?? '');
 
 function csv(rows: OrganizationRow[]): string {
@@ -20,10 +22,10 @@ function csv(rows: OrganizationRow[]): string {
     const s = String(v ?? '');
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
-  const head = ['Organization', 'Organization address', 'Type', 'Other answer', 'Contact emails', 'Managers', 'Members', 'Created'];
+  const head = ['Organization', 'Organization address', 'Type', 'Other answer', 'Organization contact', 'Manager emails', 'Managers', 'Members', 'Created'];
   const body = rows.map((o) => [
     o.name, o.org, o.type?.iri === null ? 'Other' : o.type?.label ?? '', o.type?.iri === null ? o.type.other ?? '' : '',
-    o.contacts.map((c) => c.email).filter(Boolean).join('; '), o.contacts.length, o.members,
+    o.orgContact?.email ?? '', o.contacts.map((c) => c.email).filter(Boolean).join('; '), o.contacts.length, o.members,
     o.createdAt ? new Date(o.createdAt).toISOString().slice(0, 10) : '',
   ].map(cell).join(','));
   return [head.join(','), ...body].join('\r\n');
@@ -68,9 +70,9 @@ export function AdminOrganizations({ token }: { token: string }) {
     const needle = q.trim().toLowerCase();
     return base.filter((o) => {
       if (type !== 'all' && typeKey(o) !== type) return false;
-      if (noEmail && o.contacts.some((c) => c.email)) return false;
+      if (noEmail && reachable(o)) return false;
       if (!needle) return true;
-      return [o.name, o.org, typeText(o), ...o.contacts.flatMap((c) => [c.email ?? '', c.account])].some((s) => s.toLowerCase().includes(needle));
+      return [o.name, o.org, typeText(o), o.orgContact?.email ?? '', ...o.contacts.flatMap((c) => [c.email ?? '', c.account])].some((s) => s.toLowerCase().includes(needle));
     });
   }, [base, q, type, noEmail]);
 
@@ -83,7 +85,7 @@ export function AdminOrganizations({ token }: { token: string }) {
     URL.revokeObjectURL(a.href);
   };
 
-  const withEmail = base.filter((o) => o.contacts.some((c) => c.email)).length;
+  const withEmail = base.filter(reachable).length;
   const testCount = (view?.orgs ?? []).filter((o) => o.test).length;
 
   return (
@@ -142,6 +144,15 @@ export function AdminOrganizations({ token }: { token: string }) {
                           {!o.type ? <Meta>No type yet</Meta> : o.type.iri === null ? <>Other <Meta>“{o.type.other}”</Meta></> : o.type.label}
                         </td>
                         <td>
+                          {o.orgContact ? (
+                            <div className="admin-orgs__org-contact">
+                              <a href={`mailto:${o.orgContact.email}`}>{o.orgContact.email}</a>
+                              <div><Meta>{o.orgContact.changed ? `organization contact · confirmed ${day(o.orgContact.verifiedAt)}` : 'organization contact · from its creator'}</Meta></div>
+                            </div>
+                          ) : (
+                            <div><Meta>No organization contact yet</Meta></div>
+                          )}
+                          {o.contacts.length > 0 && <div className="admin-orgs__managed"><Meta>Managed by</Meta></div>}
                           {o.contacts.length === 0 && <Meta>No manager found</Meta>}
                           {o.contacts.map((c) => (
                             <div key={c.account}>
@@ -159,8 +170,9 @@ export function AdminOrganizations({ token }: { token: string }) {
             )}
           </Section>
           <Note>
-            Contacts are the people who manage each organization, at the email they sign in with. Members are counted, not listed. An account
-            created before 21 Oct picks up its email at its next sign-in. Every time this list is opened is recorded with your account and the time.
+            Each organization&rsquo;s contact starts as the email of the person who created it, and changes only when someone who manages it
+            confirms a new address with a code. Below it are the people who manage it, at the email they sign in with; members are counted, not
+            listed. Organizations created before 22 Oct have none until someone who manages them adds one on the organization&rsquo;s page in GCID. Every time this list is opened is recorded with your account and the time.
           </Note>
           {view.views.length > 0 && (
             <Note>

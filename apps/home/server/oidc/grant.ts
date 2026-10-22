@@ -29,6 +29,7 @@ import { getClient } from '../../src/lib/oidc-clients';
 import type { StoredEnrollmentGrant } from './authorize-grant';
 import { idTokenTtl } from '../_lib/session-ttl';
 import { nameClaimForIdToken } from '../../src/lib/new-member';
+import { defaultOrgContact } from '../_lib/contact-directory';
 
 const CODE_TTL_MS = 300_000; // 5 min PKCE exchange window
 
@@ -258,6 +259,11 @@ export const onRequestPost = async ({ request, env }: FnContext): Promise<Respon
       createdAt: existing.createdAt ?? Date.now(),
     };
     await env.AUTH_CODES.put(`related:${person}:${org}`, JSON.stringify(link));
+    // The organization's contact email starts as this person's verified one, if it has none yet (org-contact.ts).
+    // Organizations only: not a workspace, not a person's own name, not a membership.
+    if (link.kind !== 'workspace' && link.kind !== 'person' && (existing.relationship ?? '') !== 'member') {
+      await defaultOrgContact(env, person, org);
+    }
     const idxKey = `related-idx:${person}`;
     const idx = JSON.parse((await env.AUTH_CODES.get(idxKey)) ?? '[]') as string[];
     if (!idx.includes(org)) { idx.push(org); await env.AUTH_CODES.put(idxKey, JSON.stringify(idx)); }

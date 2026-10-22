@@ -809,9 +809,21 @@ export async function createOrganization(
         if (!ix.ok) console.warn('[org-create] interactions grant not provisioned:', ix.error);
       }),
       x.stewardshipDelegation
-        ? vaultWriteWithDelegation(x.stewardshipDelegation, 'org.profile', { v: 1, displayName: opts.orgDisplayName || x.childName, ...(opts.orgType ? { organizationType: opts.orgType } : {}) }).catch((e: unknown) =>
-            console.warn('[org-create] org profile seed failed:', e),
-          )
+        ? (async () => {
+            // The organization's contact email starts as the creator's verified one (Paul, 2026-10-22); after
+            // this only a code changes it (server/connect/org-contact.ts). Read from their own profile, which
+            // sign-in just seeded (memoized, so usually no extra trip). None found → no contact yet.
+            const contactEmail = await import('../profile-store')
+              .then((m) => m.loadImpactProfile(x.person as Address))
+              .then((p) => p.contact?.email?.trim().toLowerCase() || undefined)
+              .catch(() => undefined);
+            await vaultWriteWithDelegation(x.stewardshipDelegation!, 'org.profile', {
+              v: 1,
+              displayName: opts.orgDisplayName || x.childName,
+              ...(opts.orgType ? { organizationType: opts.orgType } : {}),
+              ...(contactEmail ? { contactEmail } : {}),
+            });
+          })().catch((e: unknown) => console.warn('[org-create] org profile seed failed:', e))
         : Promise.resolve(),
     ]);
     if (bearer) {

@@ -148,3 +148,27 @@ export async function contactViews(kv: KVNamespace, limit = 20): Promise<Contact
     return [];
   }
 }
+
+/**
+ * An organization's contact email starts as its creator's (org-contact.ts, 2026-10-22): when a person who manages
+ * an organization is linked to it and the organization has no contact yet, their verified address is copied to
+ * it. Never replaces an organization's contact (only a code changes that), never throws.
+ */
+export async function defaultOrgContact(env: Env, person: string, org: string, now = Date.now()): Promise<boolean> {
+  try {
+    const p = accountAddress(person);
+    const o = accountAddress(org);
+    const k = await key(env);
+    if (!p || !o || p === o || !k) return false;
+    if (await readRecord(env.AUTH_CODES, o)) return false;
+    const rec = await readRecord(env.AUTH_CODES, p);
+    if (!rec) return false;
+    const email = await decrypt(k, p, rec);
+    const sealed = await encrypt(k, o, email);
+    await env.AUTH_CODES.put(contactKey(o), JSON.stringify({ v: 1, ...sealed, verifiedAt: now, source: `org-default:${p}` } satisfies ContactRecordV1));
+    return true;
+  } catch (e) {
+    console.warn('[contact-directory] org default not recorded:', e instanceof Error ? e.message : e);
+    return false;
+  }
+}

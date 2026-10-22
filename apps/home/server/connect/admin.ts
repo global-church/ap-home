@@ -150,7 +150,12 @@ export const onAdminOrgTypes = async ({ request, env }: FnContext): Promise<Resp
 export const ADMIN_APPS = [{ id: 'gather-app', label: 'Gather' }] as const;
 
 export interface OrgContact { account: string; email: string | null; verifiedAt: number | null }
-export interface OrganizationRow extends Omit<AppOrg, 'stewards'> { contacts: OrgContact[] }
+export interface OrganizationRow extends Omit<AppOrg, 'stewards'> {
+  /** The organization's own contact email (org-contact.ts): its creator's to begin with, changed only by a code. */
+  orgContact: { email: string; verifiedAt: number; changed: boolean } | null;
+  /** The people who manage it, at the email they sign in with. */
+  contacts: OrgContact[];
+}
 export interface OrganizationsView {
   apps: { id: string; label: string }[];
   app: string;
@@ -172,9 +177,10 @@ export const onAdminOrganizations = async ({ request, env }: FnContext): Promise
   const testPeople = testAddresses(await listKeys(kv, TEST_AGENT_PREFIX));
   const orgs = listAppOrganizations(await readAll(kv, await listKeys(kv, 'related:')), app, testPeople);
   const emails = contactDirectoryEnabled(env);
-  const found = emails ? await readContactEmails(env, orgs.flatMap((o) => o.stewards)) : new Map();
+  const found = emails ? await readContactEmails(env, orgs.flatMap((o) => [o.org, ...o.stewards])) : new Map();
   const rows: OrganizationRow[] = orgs.map(({ stewards, ...o }) => ({
     ...o,
+    orgContact: found.get(o.org) ? { email: found.get(o.org)!.email, verifiedAt: found.get(o.org)!.verifiedAt, changed: found.get(o.org)!.source.startsWith('org-verified') } : null,
     contacts: stewards.map((account) => ({ account, email: found.get(account)?.email ?? null, verifiedAt: found.get(account)?.verifiedAt ?? null })),
   }));
   const now = Date.now();

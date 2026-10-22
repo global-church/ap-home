@@ -17,6 +17,7 @@ import type { DelegationWire } from '../../lib/delegation';
 import { CONTRACTS } from '../../lib/chain';
 import { vaultListWithDelegation, vaultReadWithDelegation, vaultWriteWithDelegation, type VaultRecordRef } from '../../lib/vault-client';
 import { AddressChip } from '../shared/AddressChip';
+import { OrgContactEmail } from './OrgContactEmail';
 import { BuildingIcon, LinkIcon } from '../shared/Icons';
 
 import { Loading } from '../shared/Loading';
@@ -162,11 +163,11 @@ export function VaultReader({ title, hint, delegation }: { title: string; hint: 
   );
 }
 
-const FIELDS: Array<{ key: Exclude<keyof OrgProfile, 'v' | 'organizationType'>; label: string; ph: string; area?: boolean }> = [
+// The contact email is not a free field: it changes only through a code (OrgContactEmail, 2026-10-22).
+const FIELDS: Array<{ key: Exclude<keyof OrgProfile, 'v' | 'organizationType' | 'contactEmail'>; label: string; ph: string; area?: boolean }> = [
   { key: 'displayName', label: 'Display name', ph: 'e.g. Grace Community Church' },
   { key: 'description', label: 'Description', ph: 'What this organization does', area: true },
   { key: 'website', label: 'Website', ph: 'https://…' },
-  { key: 'contactEmail', label: 'Contact email', ph: 'hello@example.org' },
   { key: 'location', label: 'Location', ph: 'City, Country' },
 ];
 
@@ -225,6 +226,16 @@ export function OrgProfileManager({ delegation }: { delegation: DelegationWire }
               Organization type: <b>{orgTypeText(p.organizationType)}</b>
             </div>
           )}
+          <OrgContactEmail
+            org={delegation.delegator}
+            current={p.contactEmail ?? ''}
+            save={async (email) => {
+              // Re-read so a concurrent edit of another field is kept; only contactEmail changes here.
+              const latest = (await vaultReadWithDelegation<OrgProfile>(delegation, RT_ORG_PROFILE)) ?? p;
+              await vaultWriteWithDelegation(delegation, RT_ORG_PROFILE, { ...latest, v: 1, contactEmail: email });
+              setP((s) => ({ ...s, contactEmail: email }));
+            }}
+          />
           {FIELDS.map((f) => (
             <label key={f.key} style={{ display: 'flex', flexDirection: 'column', gap: '.25rem', fontSize: '.8rem', color: 'var(--c-g600, #475569)' }}>
               {f.label}
