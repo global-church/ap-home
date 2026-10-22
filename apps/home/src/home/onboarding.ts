@@ -277,7 +277,7 @@ async function buildBatchedPersonPlaneGrants(sa: Address): Promise<{ digests: He
  * signatures, but this IS the value step). All idempotent + best-effort: a failure never blocks the
  * home from coming up (the per-surface Enable paths remain the recovery).
  */
-async function activatePersonPlanes(owner: Address, via: Via, auth?: Auth): Promise<void> {
+async function activatePersonPlanes(owner: Address, via: Via, auth?: Auth, opts: { deployed?: boolean } = {}): Promise<void> {
   try {
     // DEPLOY-VS-GRANT RACE: every plane grant (vault-key, inbox-delivery, interactions) is verified
     // on-chain against the principal's SA via ERC-1271. If the deploy userOp hasn't confirmed on the RPC
@@ -286,17 +286,22 @@ async function activatePersonPlanes(owner: Address, via: Via, auth?: Auth): Prom
     // neither send nor RECEIVE DMs (a delivered invite silently 409s at the recipient's DO). Wait,
     // bounded, for the SA to actually be deployed before provisioning. KMS/server-deployed homes pass
     // this immediately; wallet/passkey homes whose deploy op is still mining wait it out.
-    for (let i = 0; i < 20; i++) {
+    // `deployed`: the caller holds the deploy's receipt (a KMS home created this sign-in), so there is nothing to wait for.
+    for (let i = 0; i < 20 && !opts.deployed; i++) {
       if (await isAgentDeployed(owner).catch(() => false)) break;
       await new Promise((r) => setTimeout(r, fastPollMs(2000)));
     }
-    const bound = await activateVaultIfNeeded(owner, via, auth); // also fires inbox-delivery
+    // The two planes run TOGETHER (2026-10-22): as below, neither depends on the other, and one after the other
+    // they were ~3 s of a new member's sign-in.
+    const [bound, ix] = await Promise.all([
+      activateVaultIfNeeded(owner, via, auth), // also fires inbox-delivery
+      activateInteractionsIfNeeded(owner, via, auth),
+    ]);
     // The interactions (messaging) plane is INDEPENDENT of the vault-key bind — a delegation to the
     // interactions service SA, not a vault write. A vault-key hiccup must NOT skip it, or the member is
     // left permanently unable to SEND any person→person DM (send 409s "no interactions grant") with no
     // recovery but the manual Enable-messaging path. Attempt both; each is best-effort + idempotent.
     if (!bound.ok) console.warn('[home-create] vault key not activated (activate it later from Security):', bound.error);
-    const ix = await activateInteractionsIfNeeded(owner, via, auth);
     if (!ix.ok) console.warn('[home-create] interactions plane not enabled (enable later):', ix.error);
   } catch (e) {
     console.warn('[home-create] person-plane activation deferred:', e);
@@ -424,7 +429,7 @@ export async function secureHome(
  * FREE. The member is name-free after onboarding and claims a public handle LATER, by choice, via
  * the portal's ClaimPublicNameCard (`claimName`). Returns a home with an empty `name`.
  */
-export async function secureHomeNoName(auth?: Auth, opts: { claimPendingNameVia?: Via } = {}): Promise<Result<{ home: Home }>> {
+export async function secureHomeNoName(auth?: Auth, opts: { claimPendingNameVia?: Via } = {}): Promise<Result<{ home: Home; fresh?: boolean }>> {
   if (!auth?.token) return { ok: false, error: 'no custody session' };
   const out = await secureHomeGoogleNoName(auth.token);
   if (!out.ok) return { ok: false, error: out.error };
@@ -450,9 +455,9 @@ export async function secureHomeNoName(auth?: Auth, opts: { claimPendingNameVia?
       console.warn('[secure-home] chosen name not claimed (claim it from the Naming page):', e);
     }
   }
-  await activatePersonPlanes(out.agent, opts.claimPendingNameVia ?? 'google', auth);
+  await activatePersonPlanes(out.agent, opts.claimPendingNameVia ?? 'google', auth, { deployed: out.fresh });
   await bornWithPlaybook(out.agent, auth);
-  return { ok: true, home: { address: out.agent, name: claimed } };
+  return { ok: true, home: { address: out.agent, name: claimed }, fresh: out.fresh };
 }
 
 /** Secure a NAMELESS home with a WALLET — the door's "Continue with a wallet" for an EOA that has no home yet.

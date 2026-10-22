@@ -268,12 +268,13 @@ export async function loadImpactProfile(addr: Address): Promise<ImpactStoredProf
 
 /** Seal the member's community profile into their vault under their own KEK. Throws
  *  `VaultKeyUnauthorizedError` if they haven't activated their vault key yet. */
-export async function saveImpactProfile(addr: Address, profile: ImpactStoredProfile): Promise<void> {
+export async function saveImpactProfile(addr: Address, profile: ImpactStoredProfile, opts: { keepMemo?: boolean } = {}): Promise<void> {
   const next: ImpactStoredProfile = {
     ...profile,
     contact: profile.contact ? persistContact(profile.contact) : profile.contact,
   };
-  forgetProfile(addr);
+  // keepMemo: the caller has already put `profile` in the memo as the truth (seedFreshProfile); readers keep it.
+  if (!opts.keepMemo) forgetProfile(addr);
   const out = await postProfile('set', addr, next);
   if (out.ok !== true) {
     forgetProfile(addr);
@@ -282,6 +283,41 @@ export async function saveImpactProfile(addr: Address, profile: ImpactStoredProf
   // What was just written IS the record now: keep it, rather than paying a 1.5–2 s vault read to learn it again
   // (the sign-in seed was re-read at org creation, 2026-10-21 timeline).
   profileMemo.set(addr.toLowerCase(), { at: Date.now(), value: Promise.resolve(profile) });
+}
+
+/**
+ * A home created a moment ago (its account deployed by this sign-in) has an EMPTY vault, so its profile is exactly
+ * the fields given. Put that in the memo at once and save it in the background (2026-10-22): the connect that
+ * follows reads the profile for the name and verified email (connect-profile-name.ts), and for a new account
+ * that read was a 2.4 s vault round trip spent learning that the profile was empty. Retries while the vault-key
+ * bind lands, like seedImpactProfileFields; a save that never lands drops the memo, so nothing pretends it did.
+ */
+export function seedFreshProfile(addr: Address, fields: Partial<ImpactContactProfile>): void {
+  const contact: ImpactContactProfile = {};
+  for (const [k, v] of Object.entries(fields)) {
+    if (k === 'location' || typeof v !== 'string' || !v) continue;
+    contact[k as ImpactContactScalarKey] = v;
+  }
+  const profile: ImpactStoredProfile = { v: 1, contact };
+  profileMemo.set(addr.toLowerCase(), { at: Date.now(), value: Promise.resolve(profile) });
+  void (async () => {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      // A failed save drops the memo; while retrying, the known profile is still the answer.
+      profileMemo.set(addr.toLowerCase(), { at: Date.now(), value: Promise.resolve(profile) });
+      try {
+        await saveImpactProfile(addr, profile, { keepMemo: true });
+        return;
+      } catch (e) {
+        if (e instanceof VaultKeyUnauthorizedError) {
+          await new Promise((r) => setTimeout(r, 2500));
+          continue;
+        }
+        break;
+      }
+    }
+    forgetProfile(addr);
+    console.warn('[profile-seed] new home profile not saved (edit it on /profile)');
+  })();
 }
 
 /** Seed vault-profile fields from a CONNECTION (metadata-tiers doctrine: a verified contact point is

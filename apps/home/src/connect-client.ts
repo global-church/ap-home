@@ -728,7 +728,7 @@ export async function secureHomeWithGoogle(
 export async function secureHomeGoogleNoName(
   sessionToken: string,
   onStep?: (s: string) => void,
-): Promise<{ ok: true; agent: Address } | { ok: false; error: string }> {
+): Promise<{ ok: true; agent: Address; fresh: boolean } | { ok: false; error: string }> {
   onStep?.('Securing your home on the network…');
   await ensureCsrfToken();
   const res = await custodyFetch('/a2a/custody/oidc/bootstrap', {
@@ -737,11 +737,12 @@ export async function secureHomeGoogleNoName(
     headers: { 'content-type': 'application/json', ...csrfHeaders() },
     body: JSON.stringify({ session: sessionToken }),
   });
-  const body = (await res.json().catch(() => ({}))) as { ok?: boolean; agent?: Address; error?: string; detail?: string };
+  const body = (await res.json().catch(() => ({}))) as { ok?: boolean; agent?: Address; alreadyDeployed?: boolean; transactionHash?: string; error?: string; detail?: string };
   if (!res.ok || !body.ok || !body.agent) {
     return { ok: false, error: [body.error, body.detail].filter(Boolean).join(' — ') || `secure-home failed (HTTP ${res.status})` };
   }
-  return { ok: true, agent: body.agent };
+  // `fresh`: deployed by THIS call (the runtime returns its transaction; an existing home says alreadyDeployed), so nothing can be in its vault yet (2026-10-22; profile-store seedFreshProfile).
+  return { ok: true, agent: body.agent, fresh: body.alreadyDeployed !== true && typeof body.transactionHash === 'string' };
 }
 
 /** Sign in with a passkey (registering one first if none on this device), then resolve. */

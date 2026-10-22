@@ -27,7 +27,7 @@ import { GcidButton, useGcidButtons } from '../shared/GcidButton';
 import { secureHomeNoName, activateVault, signHashFor } from '../../home/onboarding';
 import { addPasskeyCredential, claimName, fetchProfile } from '../../connect-client';
 import { CENTRAL_AUTH_DOMAIN, nameLabel } from '../../lib/domain';
-import { seedImpactProfileFields } from '../../profile-store';
+import { seedFreshProfile, seedImpactProfileFields } from '../../profile-store';
 import { rememberVerifiedEmail } from '../../lib/verified-email';
 import { parseEnrollReq } from '../onboarding/useEnrollReq';
 import type { Address } from '@agenticprimitives/types';
@@ -256,6 +256,9 @@ export function EmailAuthCard({ onLinked, busyNote = 'Securing your home…', on
           setNote(busyNote);
           const res = await secureHomeNoName({ token: d.token }, { claimPendingNameVia: 'email' });
           if (!res.ok) throw new Error(res.error);
+          // Created just now: its profile is this verified email and nothing else, so say so instead of reading
+          // it back from the vault on the way to the app (profile-store seedFreshProfile, 2026-10-22).
+          if (res.fresh) seedFreshProfile(res.home.address as `0x${string}`, { email: email.trim().toLowerCase() });
           // (The vault is activated inside secureHomeNoName — activatePersonPlanes. A second `activateVault` here
           // ran the whole ceremony again on every email sign-in; removed 2026-10-15.)
           await routeAfterIssued(d.token, { name: res.home.name || null, addr: res.home.address });
