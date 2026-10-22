@@ -1,22 +1,22 @@
-// GET /connect/admin/{me,accounts,azure-costs}  (Bearer session) — the Admin tab (Global.Church, 2026-10-09).
+// GET /connect/admin/{me,accounts,org-types,organizations,azure-costs}  (Bearer session) — the Admin tab (Global.Church, 2026-10-09).
 //
 // The SERVER decides who is an admin, on every call: the session's person address must be on `HOME_ADMINS`. The
 // menu only hides the row; these routes refuse a non-admin with 403 whatever the page does. An empty list is
 // nobody (no fallback admin).
 //
-// Numbers only: no emails, no names, no addresses leave these routes — counts and dollars. The one exception is
+// Numbers only: no emails, no names, no addresses leave these routes — counts and dollars. The exceptions:
 // /org-types (2026-10-21): the words people typed for an "Other" organization type, so the team can find what the
-// ontology is missing. Those words, with a date, and nothing that says whose they are.
+// ontology is missing. Those words, with a date, and nothing that says whose they are. And /organizations (2026-10-22),
+// which lists organizations with their managers' emails, and records every view.
 import { importJwks, verifyAgentSession } from '@agenticprimitives/connect';
 import { getServer, ownIssuer, type Env, type FnContext, type KVNamespace } from '../_lib/server-broker';
 import {
-  FACET_PREFIXES, countAccounts, countOrgs, dayOf, growth, isAdmin, parseAdmins, recordSnapshot, tallyOrgTypes,
-  type AccountCounts, type OrgCounts, type OrgTypeTally, type Snapshot,
+  FACET_PREFIXES, countAccounts, countOrgs, dayOf, growth, isAdmin, listAppOrganizations, parseAdmins, recordSnapshot, tallyOrgTypes,
+  type AccountCounts, type AppOrg, type OrgCounts, type OrgTypeTally, type Snapshot,
 } from '../../src/lib/admin-stats';
 import { costQueries, parseLabels, shapeCosts, type CostTable, type CostsResult } from '../../src/lib/azure-costs';
 import { TEST_AGENT_PREFIX, testAddresses } from '../../src/lib/test-identity';
-import { accountAddress, contactDirectoryEnabled, contactLookups, lookUpContactEmail } from '../_lib/contact-directory';
-import { readEmailFacet } from '../../src/lib/kv-indexer';
+import { accountAddress, contactDirectoryEnabled, contactViews, readContactEmails, recordContactView, type ContactView } from '../_lib/contact-directory';
 
 const json = (b: unknown, s = 200): Response =>
   new Response(JSON.stringify(b), { status: s, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
@@ -140,50 +140,46 @@ export const onAdminOrgTypes = async ({ request, env }: FnContext): Promise<Resp
   return json({ ...tally, asOf: Date.now() } satisfies OrgTypesView);
 };
 
-// ── Contact lookup (2026-10-21) ──────────────────────────────────────────────────────────────────────────────────
-// GET /connect/admin/contact?q=<account or organization address, or an email>. The operator's contact directory
-// (contact-directory.ts): the one Admin route that returns an email address, to an admin, with every read recorded.
-//  - an account address → that person's contact email;
-//  - an organization address → the contact email of each person who stewards it (its related links);
-//  - an email → the account(s) that sign in with it (by its hash), and their contact email.
+// ── Organizations by app (2026-10-22) ────────────────────────────────────────────────────────────────────────────
+// GET /connect/admin/organizations?app=<client id>. Every organization an app brought to this Home, with its name,
+// type, created date, and the contact email of each person who manages it (contact-directory.ts). It replaces the
+// one-at-a-time Contact lookup (2026-10-21): Paul wants the list. This is the one Admin route that returns email
+// addresses; each call is recorded once (who, when, which app, how many addresses), and the page shows that record.
 
-export interface ContactRow { account: string; relation: 'account' | 'steward'; email: string | null; verifiedAt: number | null; lookedUpBefore: number }
-export interface ContactView { query: string; enabled: boolean; rows: ContactRow[] }
+/** The apps the tab can show, by OIDC client id. Gather is the only one today. */
+export const ADMIN_APPS = [{ id: 'gather-app', label: 'Gather' }] as const;
 
-export const onAdminContact = async ({ request, env }: FnContext): Promise<Response> => {
+export interface OrgContact { account: string; email: string | null; verifiedAt: number | null }
+export interface OrganizationRow extends Omit<AppOrg, 'stewards'> { contacts: OrgContact[] }
+export interface OrganizationsView {
+  apps: { id: string; label: string }[];
+  app: string;
+  /** False when this Home has no CONTACT_DIRECTORY_KEY: organizations are listed, emails are not. */
+  emails: boolean;
+  orgs: OrganizationRow[];
+  /** The last views of this list, newest first (this one included). */
+  views: ContactView[];
+  asOf: number;
+}
+
+export const onAdminOrganizations = async ({ request, env }: FnContext): Promise<Response> => {
   const g = await session(request, env);
   if (!g.ok) return g.res;
   if (!g.admin) return json({ error: 'not an admin of this Home' }, 403);
-  const by = accountAddress(g.sub) ?? g.sub;
-  const q = (new URL(request.url).searchParams.get('q') ?? '').trim().toLowerCase();
-  if (!q) return json({ error: 'q required: an account or organization address, or an email' }, 400);
-  if (!contactDirectoryEnabled(env)) return json({ query: q, enabled: false, rows: [] } satisfies ContactView);
-
-  const accounts: { account: string; relation: ContactRow['relation'] }[] = [];
-  if (q.includes('@')) {
-    const facet = await readEmailFacet(env.AUTH_CODES, q);
-    const a = facet ? accountAddress(String(facet)) : null;
-    if (a) accounts.push({ account: a, relation: 'account' });
-  } else if (/^0x[0-9a-f]{40}$/.test(q)) {
-    accounts.push({ account: q, relation: 'account' });
-    // As an organization: the people whose related link points at it.
-    const stewards = (await listKeys(env.AUTH_CODES, 'related:')).filter((k) => k.split(':')[2]?.toLowerCase() === q);
-    for (const k of stewards) {
-      const person = k.split(':')[1]?.toLowerCase() ?? '';
-      if (/^0x[0-9a-f]{40}$/.test(person) && person !== q && !accounts.some((x) => x.account === person)) accounts.push({ account: person, relation: 'steward' });
-    }
-  } else {
-    return json({ error: 'not an address or an email' }, 400);
-  }
-
-  const rows: ContactRow[] = [];
-  for (const { account, relation } of accounts) {
-    const before = (await contactLookups(env.AUTH_CODES, account)).length;
-    const found = await lookUpContactEmail(env, account, by);
-    if (!found && relation === 'account' && accounts.length > 1) continue; // the org itself has no contact email
-    rows.push({ account, relation, email: found?.email ?? null, verifiedAt: found?.verifiedAt ?? null, lookedUpBefore: before });
-  }
-  return json({ query: q, enabled: true, rows } satisfies ContactView);
+  const app = new URL(request.url).searchParams.get('app') ?? ADMIN_APPS[0].id;
+  if (!ADMIN_APPS.some((a) => a.id === app)) return json({ error: `unknown app: ${app}` }, 400);
+  const kv = env.AUTH_CODES;
+  const testPeople = testAddresses(await listKeys(kv, TEST_AGENT_PREFIX));
+  const orgs = listAppOrganizations(await readAll(kv, await listKeys(kv, 'related:')), app, testPeople);
+  const emails = contactDirectoryEnabled(env);
+  const found = emails ? await readContactEmails(env, orgs.flatMap((o) => o.stewards)) : new Map();
+  const rows: OrganizationRow[] = orgs.map(({ stewards, ...o }) => ({
+    ...o,
+    contacts: stewards.map((account) => ({ account, email: found.get(account)?.email ?? null, verifiedAt: found.get(account)?.verifiedAt ?? null })),
+  }));
+  const now = Date.now();
+  if (emails) await recordContactView(kv, { by: accountAddress(g.sub) ?? g.sub, at: now, what: `organizations: ${app}`, count: found.size });
+  return json({ apps: [...ADMIN_APPS], app, emails, orgs: rows, views: await contactViews(kv, 10), asOf: now } satisfies OrganizationsView);
 };
 
 // ── Azure ────────────────────────────────────────────────────────────────────────────────────────────────────────

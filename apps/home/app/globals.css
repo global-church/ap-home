@@ -1988,3 +1988,16 @@ input:not([type=checkbox]):not([type=radio]), select, textarea { border-color: v
 .signin-intro{max-width:30rem;margin:0 auto 1.1rem;text-align:center;padding:0 .5rem}
 .signin-intro h2{margin:0 0 .5rem;font-size:1.45rem;line-height:1.2;font-weight:600}
 .signin-intro p{margin:0;font-size:.95rem;line-height:1.5;opacity:.85}
+
+/* Admin → Organizations (2026-10-22) */
+.admin-orgs__app { display: inline-flex; align-items: center; gap: .4rem; font-size: 13px; color: var(--color-text-muted); }
+.admin-orgs__app select { font: inherit; color: var(--color-text-primary); padding: 5px 8px; border: 1px solid var(--color-border-strong); border-radius: 8px; background: var(--color-surface); }
+.admin-orgs__search { flex: 1 1 260px; min-width: 0; }
+.admin-orgs__filters { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 12px 0; }
+.admin-orgs__sep { width: 1px; height: 18px; background: var(--color-border); margin: 0 4px; }
+.admin-orgs__scroll { overflow-x: auto; max-width: 100%; }
+.admin-orgs__table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+.admin-orgs__table th { text-align: left; font-size: 11.5px; font-weight: 700; color: var(--color-text-muted); padding: 6px 10px; border-bottom: 1px solid var(--color-border-strong); white-space: nowrap; }
+.admin-orgs__table td { padding: 9px 10px; border-bottom: 1px solid var(--color-border); vertical-align: top; color: var(--color-text-body); }
+.admin-orgs__table td a { color: inherit; text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }
+.admin-orgs__table td:nth-child(4), .admin-orgs__table td:nth-child(5) { white-space: nowrap; }

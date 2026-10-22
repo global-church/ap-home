@@ -9,8 +9,8 @@
 //  - written at the moment an address is verified (email-verify.ts), so every account from launch has one;
 //  - encrypted with AES-256-GCM under CONTACT_DIRECTORY_KEY (a deployment secret, backed up in the Azure vault);
 //    the person's address is the AAD, so a record cannot be moved onto another account; a leaked KV is unreadable;
-//  - read only through the Admin lookup (admin.ts, HOME_ADMINS), and every read is recorded ON the record
-//    (`lookups`: who and when, the last 50) and in the server log.
+//  - read only through Admin's Organizations tab (admin.ts, HOME_ADMINS), and every view of it is recorded
+//    (`contact-views:log`: who, when, which listing, how many) and in the server log.
 // No key configured → nothing is written and the lookup says so. A failure here never fails a sign-in.
 import type { Env, KVNamespace } from './server-broker';
 
@@ -23,7 +23,7 @@ export interface ContactRecordV1 {
   verifiedAt: number;
   /** How it was verified: 'email-sign-in' or 'email-link' (added to an existing account). */
   source: string;
-  /** Who looked it up in Admin, and when (newest last, at most 50). */
+  /** Who looked it up in the old one-at-a-time Admin lookup (2026-10-21 to 10-22); kept on records that have it. */
   lookups?: { by: string; at: number }[];
 }
 
@@ -35,7 +35,6 @@ export interface ContactLookup {
 
 const ADDRESS = /^0x[0-9a-f]{40}$/;
 const contactKey = (address: string): string => `contact:${address.toLowerCase()}`;
-const LOOKUPS_KEPT = 50;
 
 const b64 = (bytes: Uint8Array): string => btoa(String.fromCharCode(...bytes));
 const unb64 = (s: string): Uint8Array => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
@@ -99,22 +98,53 @@ export async function recordContactEmail(env: Env, agent: string, email: string,
   }
 }
 
-/** An admin's read of one account's contact email. Records who looked, on the record and in the log. */
-export async function lookUpContactEmail(env: Env, address: string, by: string, now = Date.now()): Promise<ContactLookup | null> {
-  const a = accountAddress(address);
+/**
+ * Admin's Organizations tab (2026-10-22): read the contact email of each account, for one listing. Unlike the old
+ * one-at-a-time lookup this writes nothing per account; the VIEW is what is recorded (recordContactView), once, with
+ * who opened it, when, and how many addresses it showed. A record that does not open under this key for this
+ * account (moved, or sealed under another key) is left out and logged, never shown.
+ */
+export async function readContactEmails(env: Env, addresses: string[]): Promise<Map<string, ContactLookup>> {
+  const out = new Map<string, ContactLookup>();
   const k = await key(env);
-  if (!a || !k) return null;
-  const rec = await readRecord(env.AUTH_CODES, a);
-  if (!rec) return null;
-  const email = await decrypt(k, a, rec);
-  const lookups = [...(rec.lookups ?? []), { by: by.toLowerCase(), at: now }].slice(-LOOKUPS_KEPT);
-  await env.AUTH_CODES.put(contactKey(a), JSON.stringify({ ...rec, lookups } satisfies ContactRecordV1));
-  console.info('[contact-directory] admin lookup', { account: a, by: by.toLowerCase(), at: new Date(now).toISOString() });
-  return { email, verifiedAt: rec.verifiedAt, source: rec.source };
+  if (!k) return out;
+  const unique = [...new Set(addresses.map(accountAddress).filter((a): a is string => !!a))];
+  for (let i = 0; i < unique.length; i += 50) {
+    await Promise.all(unique.slice(i, i + 50).map(async (a) => {
+      const rec = await readRecord(env.AUTH_CODES, a);
+      if (!rec) return;
+      try {
+        out.set(a, { email: await decrypt(k, a, rec), verifiedAt: rec.verifiedAt, source: rec.source });
+      } catch {
+        console.warn('[contact-directory] a record did not open for its account', { account: a });
+      }
+    }));
+  }
+  return out;
 }
 
-/** Who has looked this account's email up (for the Admin page). */
-export async function contactLookups(kv: KVNamespace, address: string): Promise<{ by: string; at: number }[]> {
-  const a = accountAddress(address);
-  return a ? ((await readRecord(kv, a))?.lookups ?? []) : [];
+export interface ContactView { by: string; at: number; what: string; count: number }
+const VIEWS_KEY = 'contact-views:log';
+const VIEWS_KEPT = 500;
+
+/** Record that an admin was shown contact emails: who, when, which listing, how many. The last 500 are kept. */
+export async function recordContactView(kv: KVNamespace, view: ContactView): Promise<void> {
+  let log: ContactView[] = [];
+  try {
+    log = JSON.parse((await kv.get(VIEWS_KEY)) ?? '[]') as ContactView[];
+  } catch {
+    log = [];
+  }
+  const entry = { ...view, by: view.by.toLowerCase() };
+  await kv.put(VIEWS_KEY, JSON.stringify([...log, entry].slice(-VIEWS_KEPT)));
+  console.info('[contact-directory] admin view', { ...entry, at: new Date(view.at).toISOString() });
+}
+
+/** The recorded views, newest first. */
+export async function contactViews(kv: KVNamespace, limit = 20): Promise<ContactView[]> {
+  try {
+    return (JSON.parse((await kv.get(VIEWS_KEY)) ?? '[]') as ContactView[]).slice(-limit).reverse();
+  } catch {
+    return [];
+  }
 }

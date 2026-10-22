@@ -1,12 +1,14 @@
 'use client';
 // ADMIN (Global.Church, 2026-10-09) — for the people who run this Home: how many people have a GCID, how many
-// organizations, and what the estate costs on Azure. Counts and dollars only; nobody's name or address is here.
+// organizations, and what the estate costs on Azure. The Overview tab is counts and dollars only; the Organizations tab
+// (AdminOrganizations.tsx, 2026-10-22) lists organizations with their managers' emails, and each view is recorded.
 // The server (`/connect/admin/*`) decides who may see it; to anyone else this page shows the refusal.
 import { useCallback, useEffect, useState } from 'react';
 import { useSession } from '../../context/session';
-import { PageHead, Section, Stats, Stat, List, Row, Empty, ErrorNote, Note, Button, Meta, SkeletonRows, SearchInput } from '../../ui';
+import { PageHead, Section, Stats, Stat, List, Row, Empty, ErrorNote, Note, Button, Meta, SkeletonRows, Tabs } from '../../ui';
 import { budgetTone, type CostsResult, type CostsView } from '../../lib/azure-costs';
-import type { AccountsView, ContactView, OrgTypesView } from '../../../server/connect/admin';
+import type { AccountsView, OrgTypesView } from '../../../server/connect/admin';
+import { AdminOrganizations } from './AdminOrganizations';
 
 type Load<T> = T | null | undefined;
 
@@ -35,6 +37,13 @@ export function AdminView() {
   const [refused, setRefused] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Overview (counts and costs) or Organizations (the list with contacts, 2026-10-22). The hash keeps the tab on reload.
+  const [tab, setTabState] = useState<'overview' | 'organizations'>('overview');
+  useEffect(() => { if (window.location.hash === '#organizations') setTabState('organizations'); }, []);
+  const setTab = (t: 'overview' | 'organizations') => {
+    setTabState(t);
+    window.history.replaceState(null, '', t === 'organizations' ? '#organizations' : window.location.pathname + window.location.search);
+  };
 
   const load = useCallback(async (refresh: boolean) => {
     if (!session) return;
@@ -67,14 +76,20 @@ export function AdminView() {
     <>
       <PageHead
         title="Admin"
-        description="How many people use GCID, and what running it costs on Azure."
-        actions={<Button size="sm" onClick={() => void refresh()} disabled={busy || !session}>{busy ? 'Refreshing…' : 'Refresh'}</Button>}
+        description={tab === 'overview' ? 'How many people use GCID, and what running it costs on Azure.' : 'The organizations each app brought to GCID, with their type and who to contact.'}
+        actions={tab === 'overview' ? <Button size="sm" onClick={() => void refresh()} disabled={busy || !session}>{busy ? 'Refreshing…' : 'Refresh'}</Button> : undefined}
       />
-      {error && <ErrorNote>{error}</ErrorNote>}
-      <AccountsSection a={accounts} />
-      <OrgTypesSection t={orgTypes} />
-      {session && <ContactSection token={session.token} />}
-      <CostsSection c={costs} />
+      <Tabs label="Admin" value={tab} onChange={setTab} items={[{ id: 'overview', label: 'Overview' }, { id: 'organizations', label: 'Organizations' }]} />
+      {tab === 'organizations' ? (
+        session && <AdminOrganizations token={session.token} />
+      ) : (
+        <>
+          {error && <ErrorNote>{error}</ErrorNote>}
+          <AccountsSection a={accounts} />
+          <OrgTypesSection t={orgTypes} />
+          <CostsSection c={costs} />
+        </>
+      )}
     </>
   );
 }
@@ -109,62 +124,6 @@ function AccountsSection({ a }: { a: Load<AccountsView> }) {
           {a.testAccounts.toLocaleString()} test {a.testAccounts === 1 ? 'identity is' : 'identities are'} not counted here: people who signed in as name+gcidtest@…, and organizations only they belong to.
         </Note>
       )}
-    </Section>
-  );
-}
-
-/** Contact lookup (2026-10-21): the email a person signs in with, from the operator's encrypted copy. The one
- *  place an address is shown, to an admin, and every lookup is recorded with who looked and when. */
-function ContactSection({ token }: { token: string }) {
-  const [q, setQ] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [view, setView] = useState<ContactView | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  const look = async () => {
-    const query = q.trim();
-    if (!query) return;
-    setBusy(true);
-    setErr(null);
-    const r = await getJson<ContactView>(`/connect/admin/contact?q=${encodeURIComponent(query)}`, token);
-    setBusy(false);
-    if (r.ok) setView(r.body);
-    else { setView(null); setErr(r.error); }
-  };
-  const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
-  return (
-    <Section title="Contact lookup" testId="admin-contact">
-      <form
-        style={{ display: 'flex', gap: '.5rem', alignItems: 'center', flexWrap: 'wrap' }}
-        onSubmit={(e) => { e.preventDefault(); void look(); }}
-      >
-        <div style={{ flex: '1 1 320px' }}>
-          <SearchInput
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="Account or organization address, or an email"
-            aria-label="Account or organization address, or an email"
-            data-testid="admin-contact-q"
-          />
-        </div>
-        <Button type="submit" size="sm" disabled={busy || !q.trim()} data-testid="admin-contact-go">{busy ? 'Looking…' : 'Look up'}</Button>
-      </form>
-      {err && <ErrorNote>{err}</ErrorNote>}
-      {view && !view.enabled && <Note>The contact directory is not switched on for this Home yet (no key configured).</Note>}
-      {view && view.enabled && (view.rows.length === 0 ? (
-        <Note>No account or organization found for that.</Note>
-      ) : (
-        <List>
-          {view.rows.map((r) => (
-            <Row
-              key={r.account}
-              title={r.email ?? 'No contact email on file yet'}
-              meta={`${r.relation === 'steward' ? 'Manages this organization' : 'Account'} ${short(r.account)}${r.verifiedAt ? ` · verified ${when(r.verifiedAt)}` : ''}${r.lookedUpBefore ? ` · looked up ${r.lookedUpBefore} time${r.lookedUpBefore === 1 ? '' : 's'} before` : ''}`}
-              testId={`admin-contact-row-${r.account.slice(2, 10)}`}
-            />
-          ))}
-        </List>
-      ))}
-      <Note>Every lookup is recorded with your account and the time. Addresses are kept encrypted and appear only here. An account created before this was switched on gets its address at its next sign-in.</Note>
     </Section>
   );
 }

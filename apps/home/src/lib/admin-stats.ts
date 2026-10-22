@@ -220,3 +220,93 @@ export function tallyOrgTypes(links: { key: string; value: string | null }[], te
     noType,
   };
 }
+
+// ── Organizations by app (2026-10-22) ────────────────────────────────────────────────────────────────────────────
+// Admin's Organizations tab: every organization an app (an OIDC client, e.g. Gather's `gather-app`) brought to this
+// Home, with its name, type and the people who manage it. Built from the related links alone:
+//  - an organization belongs to the app when a link to it was granted to that client (`requestedBy`), or when a
+//    workspace the app created is governed by it (a host who picked an organization they already had);
+//  - its managers are the links to it that are not memberships (`relationship: 'member'`), a person's own names,
+//    or the organization itself. Members are counted, never listed;
+//  - deleted organizations and workspaces are left out; an organization only test people manage is marked `test`.
+
+export interface AppOrgType { iri: string | null; label?: string; other?: string }
+
+export interface AppOrg {
+  org: string;
+  name: string;
+  createdAt: number | null;
+  type: AppOrgType | null;
+  /** Person addresses that manage it, earliest link first. */
+  stewards: string[];
+  members: number;
+  test: boolean;
+}
+
+type LinkValue = {
+  orgName?: string; kind?: string; relationship?: string; status?: string; createdAt?: number;
+  requestedBy?: string; governor?: string; orgType?: { iri?: unknown; label?: unknown; other?: unknown };
+};
+
+function readType(t: LinkValue['orgType']): AppOrgType | null {
+  if (!t || typeof t !== 'object') return null;
+  if (typeof t.iri === 'string' && typeof t.label === 'string') return { iri: t.iri, label: t.label };
+  if (t.iri === null && typeof t.other === 'string') return { iri: null, other: t.other };
+  return null;
+}
+
+export function listAppOrganizations(
+  links: { key: string; value: string | null }[],
+  app: string,
+  testPeople: ReadonlySet<string> = new Set(),
+): AppOrg[] {
+  const parsed: { person: string; org: string; v: LinkValue }[] = [];
+  for (const l of links) {
+    const [, personRaw, orgRaw] = l.key.split(':');
+    const person = personRaw?.toLowerCase() ?? '';
+    const org = orgRaw?.toLowerCase() ?? '';
+    if (!ADDRESS.test(org)) continue;
+    try {
+      parsed.push({ person, org, v: JSON.parse(l.value ?? '{}') as LinkValue });
+    } catch {
+      /* unreadable link: skipped */
+    }
+  }
+  // Which organizations the app brought here.
+  const ours = new Set<string>();
+  for (const { org, v } of parsed) {
+    if (v.requestedBy !== app) continue;
+    const kind = (v.kind ?? 'org').toLowerCase();
+    if (kind === 'workspace') {
+      const g = (v.governor ?? '').toLowerCase();
+      if (ADDRESS.test(g)) ours.add(g);
+    } else if (kind !== 'person') ours.add(org);
+  }
+  const byOrg = new Map<string, AppOrg & { deleted: boolean; workspace: boolean; firstAt: Map<string, number> }>();
+  for (const { person, org, v } of parsed) {
+    if (!ours.has(org)) continue;
+    const rel = (v.relationship ?? '').toLowerCase();
+    const kind = (v.kind ?? 'org').toLowerCase();
+    if (kind === 'person' || rel === 'self') continue;
+    const o = byOrg.get(org) ?? { org, name: '', createdAt: null, type: null, stewards: [], members: 0, test: false, deleted: false, workspace: false, firstAt: new Map() };
+    const at = typeof v.createdAt === 'number' ? v.createdAt : null;
+    if (at !== null && (o.createdAt === null || at < o.createdAt)) o.createdAt = at;
+    if (!o.name && v.orgName && v.orgName.toLowerCase() !== org) o.name = v.orgName;
+    o.type ??= readType(v.orgType);
+    if (v.status === 'deleted') o.deleted = true;
+    if (kind === 'workspace') o.workspace = true;
+    if (rel === 'member') o.members++;
+    else if (ADDRESS.test(person) && person !== org && !o.firstAt.has(person)) o.firstAt.set(person, at ?? Number.POSITIVE_INFINITY);
+    byOrg.set(org, o);
+  }
+  const out: AppOrg[] = [];
+  for (const o of byOrg.values()) {
+    if (o.deleted || o.workspace) continue;
+    const stewards = [...o.firstAt.entries()].sort((a, b) => a[1] - b[1]).map(([p]) => p);
+    out.push({
+      org: o.org, name: o.name, createdAt: o.createdAt, type: o.type, stewards, members: o.members,
+      test: stewards.length > 0 && stewards.every((p) => testPeople.has(p)),
+    });
+  }
+  return out.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0) || a.name.localeCompare(b.name));
+}

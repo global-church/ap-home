@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { countAccounts, countOrgs, growth, tallyOrgTypes, isAdmin, methodOf, parseAdmins, recordSnapshot, type Snapshot } from './admin-stats';
+import { countAccounts, countOrgs, growth, tallyOrgTypes, listAppOrganizations, isAdmin, methodOf, parseAdmins, recordSnapshot, type Snapshot } from './admin-stats';
 
 const A = '0x' + 'a'.repeat(40);
 const B = '0x' + 'b'.repeat(40);
@@ -110,5 +110,38 @@ describe('organization types (2026-10-21)', () => {
   it('leaves deleted organizations and unreadable links out', () => {
     const r = tallyOrgTypes([l(P, O1, { kind: 'org', status: 'deleted', orgType: CHR }), { key: `related:${P}:${O2}`, value: '{' }]);
     expect(r).toEqual({ byType: [], other: [], noType: 0 });
+  });
+});
+
+describe('organizations by app (2026-10-22)', () => {
+  const P = (n: number) => `0x${String(n).padStart(40, '0')}`;
+  const link = (person: string, org: string, v: Record<string, unknown>) => ({ key: `related:${person}:${org}`, value: JSON.stringify(v) });
+  const CHURCH = { iri: 'https://ontology.global.church/core#organizationtypevalue-church', label: 'Church' };
+
+  it('lists the organizations the app created, with their type and managers; members are counted, not listed', () => {
+    const rows = listAppOrganizations([
+      link(P(1), P(100), { orgName: 'Grace Church', requestedBy: 'gather-app', kind: 'org', createdAt: 10, orgType: CHURCH }),
+      link(P(2), P(100), { orgName: 'Grace Church', requestedBy: 'home-invite', kind: 'org', relationship: 'member', createdAt: 20 }),
+      link(P(3), P(100), { orgName: 'Grace Church', requestedBy: 'gather-app', kind: 'org', relationship: 'steward', createdAt: 30 }),
+      link(P(4), P(200), { orgName: 'Not from Gather', requestedBy: 'other-app', kind: 'org', createdAt: 40 }),
+    ], 'gather-app');
+    expect(rows).toEqual([{ org: P(100), name: 'Grace Church', createdAt: 10, type: CHURCH, stewards: [P(1), P(3)], members: 1, test: false }]);
+  });
+
+  it('includes an organization a Gather workspace is governed by, and keeps an Other answer in the person’s words', () => {
+    const rows = listAppOrganizations([
+      link(P(1), P(300), { orgName: 'House Church Network', requestedBy: 'home', kind: 'org', createdAt: 5, orgType: { iri: null, other: 'House church network' } }),
+      link(P(1), P(301), { orgName: 'Gather workspace', requestedBy: 'gather-app', kind: 'workspace', governor: P(300), createdAt: 6 }),
+    ], 'gather-app');
+    expect(rows.map((r) => [r.org, r.type])).toEqual([[P(300), { iri: null, other: 'House church network' }]]);
+  });
+
+  it('leaves out deleted organizations, a person’s own names, and marks one only test people manage', () => {
+    const rows = listAppOrganizations([
+      link(P(1), P(400), { requestedBy: 'gather-app', kind: 'org', status: 'deleted' }),
+      link(P(1), P(1), { requestedBy: 'gather-app', kind: 'person', relationship: 'self' }),
+      link(P(9), P(500), { orgName: 'Load test org', requestedBy: 'gather-app', kind: 'org', createdAt: 1 }),
+    ], 'gather-app', new Set([P(9)]));
+    expect(rows.map((r) => [r.org, r.test])).toEqual([[P(500), true]]);
   });
 });
