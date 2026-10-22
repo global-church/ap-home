@@ -7552,8 +7552,13 @@ app.post('/custody/oidc/bootstrap', async (c) => {
   const body = (await c.req.json().catch(() => null)) as { session?: string } | null;
   if (!body?.session) return c.json({ ok: false, error: 'session required' }, 400);
 
+  // Where a new member's account creation spends its time (2026-10-22), as Server-Timing on the reply.
+  const laps: string[] = [];
+  let lapAt = Date.now();
+  const lap = (name: string) => { const now = Date.now(); laps.push(`${name};dur=${now - lapAt}`); lapAt = now; c.header('Server-Timing', laps.join(', ')); };
   const gate = await verifyCustodySession(body.session, gateCfg);
   if (!gate.ok) return c.json({ ok: false, error: gate.error }, gate.status as 400);
+  lap('gate');
 
   try {
     const { cSub, sign } = await deriveSubjectCustodian(gate.subject, c.env.A2A_CUSTODY_ROOT_KEY, {
@@ -7561,7 +7566,9 @@ app.post('/custody/oidc/bootstrap', async (c) => {
       auditSink: buildAuditSink(c.env), // G-2: C_sub signatures emit key-custody.sign
       rotation: gate.rotation, // spec 235 §5b: derive the rotation the broker minted
     });
+    lap('derive');
     const sa = await accountClient(c.env).getAddressForAgentAccount({ custodians: [cSub], salt: 0n });
+    lap('address');
     // INVARIANT (spec 235 §5.4): act ONLY for the SA the session proves.
     if (gate.sessionSub.toLowerCase() !== caip10(Number(c.env.CHAIN_ID), sa).toLowerCase()) {
       return c.json({ ok: false, error: 'sa_mismatch', detail: 'session subject ≠ derived SA' }, 403);
@@ -7570,6 +7577,7 @@ app.post('/custody/oidc/bootstrap', async (c) => {
     // Idempotent: if already deployed (named or nameless), the home exists.
     const pub = createPublicClient({ chain: chainFor(c.env), transport: http(c.env.RPC_URL) });
     const code = await pub.getBytecode({ address: sa });
+    lap('code');
     if (code && code !== '0x') {
       return c.json({ ok: true, agent: sa, agentId: caip10(Number(c.env.CHAIN_ID), sa), alreadyDeployed: true });
     }
@@ -7586,12 +7594,15 @@ app.post('/custody/oidc/bootstrap', async (c) => {
       paymaster: c.env.PAYMASTER as Address,
       verifyingPaymaster,
     });
+    lap('build');
     if (sender.toLowerCase() !== sa.toLowerCase()) {
       return c.json({ ok: false, error: 'sender_mismatch', detail: 'built userOp sender ≠ derived SA' }, 500);
     }
 
     const signature = await sign(userOpHash);
+    lap('sign');
     const relayerAccount = await getRelayerAccount(c.env, 'direct-deploy', buildAuditSink(c.env));
+    lap('relayer');
     // DEPLOY-RACE RECOVERY: the getBytecode pre-check can read a stale '0x' (lagging RPC), or a
     // concurrent/double-submitted bootstrap can deploy this deterministic SA first. Either way the
     // account then EXISTS, so this deploy userOp reverts with AA25 (nonce mismatch) / AA10 (already
@@ -7604,6 +7615,7 @@ app.post('/custody/oidc/bootstrap', async (c) => {
     let deployedAddress: Address | undefined; let receipt: { transactionHash: string };
     try {
       ({ deployedAddress, receipt } = await accountClient(c.env).submitDeployUserOp({ ...userOp, signature }, relayerAccount));
+      lap('submit');
     } catch (submitErr) {
       if (await deployedNow()) {
         return c.json({ ok: true, agent: sa, agentId: caip10(Number(c.env.CHAIN_ID), sa), alreadyDeployed: true });
@@ -7814,8 +7826,13 @@ app.post('/custody/oidc/bootstrap-org', async (c) => {
   if (!/^0x[0-9a-fA-F]{40}$/.test(body.delegate)) return c.json({ ok: false, error: 'bad_delegate' }, 400);
   if (body.grantOrg && !/^0x[0-9a-fA-F]{40}$/.test(body.grantOrg)) return c.json({ ok: false, error: 'bad_grantOrg' }, 400);
 
+  // Where an organization's creation spends its time (2026-10-22), as Server-Timing on the reply.
+  const laps: string[] = [];
+  let lapAt = Date.now();
+  const lap = (name: string) => { const now = Date.now(); laps.push(`${name};dur=${now - lapAt}`); lapAt = now; c.header('Server-Timing', laps.join(', ')); };
   const gate = await verifyCustodySession(body.session, gateCfg);
   if (!gate.ok) return c.json({ ok: false, error: gate.error }, gate.status as 400);
+  lap('gate');
 
   try {
     const { cSub, sign } = await deriveSubjectCustodian(gate.subject, c.env.A2A_CUSTODY_ROOT_KEY, {
@@ -7824,6 +7841,7 @@ app.post('/custody/oidc/bootstrap-org', async (c) => {
       rotation: gate.rotation,
     });
     // Person-binding (spec 235 §5.4): the session must prove the PERSON whose C_sub custodies the org.
+    lap('derive');
     const person = await accountClient(c.env).getAddressForAgentAccount({ custodians: [cSub], salt: 0n });
     if (gate.sessionSub.toLowerCase() !== caip10(Number(c.env.CHAIN_ID), person).toLowerCase()) {
       return c.json({ ok: false, error: 'sa_mismatch', detail: 'session subject ≠ derived person SA' }, 403);
@@ -7835,6 +7853,7 @@ app.post('/custody/oidc/bootstrap-org', async (c) => {
     let orgSalt = 1n; // guarantee non-zero (distinct from the person's salt 0n) even on an all-zero draw
     for (const b of saltBytes) orgSalt = (orgSalt << 8n) | BigInt(b);
     const orgSA = await accountClient(c.env).getAddressForAgentAccount({ custodians: [cSub], salt: orgSalt });
+    lap('address');
 
     // The org's outbound grants (spec 253) — org is the delegator of all three; person→org membership deferred.
     const siteGrant = buildOrgGrant(c.env, orgSA, body.delegate);
@@ -7852,6 +7871,7 @@ app.post('/custody/oidc/bootstrap-org', async (c) => {
     const orgName = `${label}.${root.typed ? root.tld : (c.env.AGENT_NAME_PARENT || AGENT_NAME_PARENT)}`;
     // Type first, then the claim — the record the suffix asserts must exist before the name does.
     const declare = root.typed ? await declareTypeCallsFor(c.env, orgSA, root.tld) : [];
+    lap('declare');
     const register = buildSubregistryRegisterCall({ subregistry: root.subregistry, label, newOwner: orgSA });
     const setPrimary = buildSetPrimaryNameCall({ registry: c.env.AGENT_NAME_REGISTRY as Address, node: body.node });
     const callData = buildExecuteBatchCallData([...declare, register, setPrimary, ...approveCalls]);
@@ -7868,13 +7888,17 @@ app.post('/custody/oidc/bootstrap-org', async (c) => {
       paymaster: c.env.PAYMASTER as Address,
       verifyingPaymaster,
     });
+    lap('build');
     if (sender.toLowerCase() !== orgSA.toLowerCase()) {
       return c.json({ ok: false, error: 'sender_mismatch', detail: 'built userOp sender ≠ derived org SA' }, 500);
     }
 
     const signature = await sign(userOpHash); // C_sub signs (65-byte ECDSA)
+    lap('sign');
     const relayerAccount = await getRelayerAccount(c.env, 'direct-deploy', buildAuditSink(c.env));
+    lap('relayer');
     const { deployedAddress, receipt } = await accountClient(c.env).submitDeployUserOp({ ...userOp, signature }, relayerAccount);
+    lap('submit');
     const inner = detectInnerOpFailure(receipt as unknown as Parameters<typeof detectInnerOpFailure>[0]);
     if (!inner.ok) {
       return c.json(
