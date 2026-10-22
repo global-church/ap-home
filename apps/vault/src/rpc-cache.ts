@@ -87,8 +87,30 @@ export function withRpcCache(origFetch: typeof fetch, rpcHost: string): typeof f
     if (shared) { stats.shared++; return reply(await shared); }
     stats.misses++;
     const p = (async () => {
-      const res = await origFetch(input, init);
-      const text = await res.text();
+      // ONE RETRY for a read the chain did not answer (2026-10-22): under a burst of publishes a delegation's
+      // signature or revocation read occasionally failed, and the verifier — rightly — refused the vault op as
+      // "signature check unavailable". A read is safe to repeat; a second failure is returned as before. Both
+      // are logged, with what came back, because the cause was invisible (no log on this hop).
+      let res: Response | null = null;
+      let text = '';
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          res = await origFetch(input, init);
+          text = await res.text();
+        } catch (e) {
+          console.warn('[rpc-cache] chain read failed', { method: rpc.method, attempt, error: e instanceof Error ? e.message : String(e) });
+          if (attempt === 1) throw e;
+          await new Promise((r) => setTimeout(r, 250));
+          continue;
+        }
+        const failed = !res.ok || /"error"\s*:/.test(text);
+        if (!failed) break;
+        console.warn('[rpc-cache] chain read refused', { method: rpc.method, attempt, status: res.status, body: text.slice(0, 300) });
+        // A JSON-RPC revert (a real answer from the chain) is not retried; a gateway or upstream failure is.
+        if (res.ok && /"code"\s*:\s*3\b|execution reverted/.test(text)) break;
+        if (attempt === 0) await new Promise((r) => setTimeout(r, res?.status === 429 ? 600 : 250));
+      }
+      res = res!;
       if (res.ok) {
         const ttl = ttlFor(rpc, text);
         if (ttl > 0) cache.set(key, { until: Date.now() + ttl, body: text });

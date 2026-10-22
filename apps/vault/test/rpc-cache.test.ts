@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { toFunctionSelector } from 'viem';
 
 import { cacheKeyFor, resetRpcCache, stats, TTL, ttlFor, withRpcCache } from '../src/rpc-cache';
@@ -72,5 +72,39 @@ describe('the wrapped fetch', () => {
     await chain.fetch(RPC, { method: 'POST', body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_sendRawTransaction', params: ['0x00'] }) });
     await chain.fetch(RPC, { method: 'POST', body: JSON.stringify([{ jsonrpc: '2.0', id: 1, method: 'eth_chainId', params: [] }]) }).catch(() => undefined);
     expect(stats).toMatchObject({ hits: 0, misses: 0 });
+  });
+});
+
+describe('a read the chain did not answer (2026-10-22)', () => {
+  it('is asked once more, and the second answer is the one returned', async () => {
+    let n = 0;
+    const flaky = (async (_i: RequestInfo | URL, init?: RequestInit) => {
+      n++;
+      const rpc = JSON.parse(String(init?.body)) as { id: number };
+      if (n === 1) return new Response('upstream timeout', { status: 503 });
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: TRUE }), { status: 200 });
+    }) as typeof fetch;
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const f = withRpcCache(flaky, new URL(RPC).host);
+    const out = await (await f(RPC, { method: 'POST', body: call(isValidSig + '02', 4) })).json();
+    expect(n).toBe(2);
+    expect(out).toEqual({ jsonrpc: '2.0', id: 4, result: TRUE });
+  });
+  it('a revert is a real answer and is not asked again', async () => {
+    let n = 0;
+    const reverting = (async (_i: RequestInfo | URL, init?: RequestInit) => {
+      n++;
+      const rpc = JSON.parse(String(init?.body)) as { id: number };
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, error: { code: 3, message: 'execution reverted' } }), { status: 200 });
+    }) as typeof fetch;
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await withRpcCache(reverting, new URL(RPC).host)(RPC, { method: 'POST', body: call(isValidSig + '03') });
+    expect(n).toBe(1);
+  });
+  it('two failures return the failure, as before', async () => {
+    const down = (async () => new Response('nope', { status: 502 })) as typeof fetch;
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const r = await withRpcCache(down, new URL(RPC).host)(RPC, { method: 'POST', body: call(isValidSig + '04') });
+    expect(r.status).toBe(502);
   });
 });
