@@ -110,7 +110,7 @@ export function ClaimPublicNameCard() {
       // commit + nudge every agents dropdown (same fix as the naming page's claim card).
       void (async () => {
         for (let i = 0; i < 10; i++) {
-          const p = await fetchProfile(session.token).catch(() => null);
+          const p = await fetchProfile(session.token, { fresh: true }).catch(() => null);
           if (p?.name) break;
           await new Promise((r) => setTimeout(r, 1500));
         }

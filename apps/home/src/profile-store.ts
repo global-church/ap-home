@@ -242,7 +242,8 @@ export async function writePersonRecord(principal: Address, recordType: PersonRe
  * reused for a few seconds; a write drops it. Failures are never kept (a vault key that is not bound yet
  * must be retried, which is what seedImpactProfileFields does).
  */
-const PROFILE_MEMO_MS = 15_000;
+// 60 s (2026-10-21; was 15): a Gather publish reads it ~20 s after sign-in seeded it, and only this tab writes it.
+const PROFILE_MEMO_MS = 60_000;
 const profileMemo = new Map<string, { at: number; value: Promise<ImpactStoredProfile> }>();
 function forgetProfile(addr: Address): void {
   profileMemo.delete(addr.toLowerCase());
@@ -274,8 +275,13 @@ export async function saveImpactProfile(addr: Address, profile: ImpactStoredProf
   };
   forgetProfile(addr);
   const out = await postProfile('set', addr, next);
-  forgetProfile(addr);
-  if (out.ok !== true) throw new Error(`save failed: ${String(out.error ?? 'unknown')}`);
+  if (out.ok !== true) {
+    forgetProfile(addr);
+    throw new Error(`save failed: ${String(out.error ?? 'unknown')}`);
+  }
+  // What was just written IS the record now: keep it, rather than paying a 1.5–2 s vault read to learn it again
+  // (the sign-in seed was re-read at org creation, 2026-10-21 timeline).
+  profileMemo.set(addr.toLowerCase(), { at: Date.now(), value: Promise.resolve(profile) });
 }
 
 /** Seed vault-profile fields from a CONNECTION (metadata-tiers doctrine: a verified contact point is

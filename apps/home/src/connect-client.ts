@@ -2835,10 +2835,26 @@ export interface BasicProfile {
   deployedError?: string;
 }
 
-export async function fetchProfile(token: string): Promise<BasicProfile | null> {
-  const r = await fetch('/me/profile', { headers: { authorization: `Bearer ${token}` } });
-  if (!r.ok) return null;
-  return ((await r.json()) as { profile: BasicProfile }).profile;
+/**
+ * A short memo of `/me/profile` per token (2026-10-21). One sign-in through to a Gather publish read it SIX times,
+ * 0.2–1 s each, from the session shell, the consent screen, the client defaults and the sign-in card — the same
+ * answer every time. Callers asking while a read is in flight share it; an answer is reused for ten seconds; a
+ * failure is never kept. `fresh` bypasses it, for the reads that follow a change (a name claimed, a refresh).
+ */
+const PROFILE_MEMO_MS = 10_000;
+const profileMemo = new Map<string, { at: number; value: Promise<BasicProfile | null> }>();
+
+export async function fetchProfile(token: string, opts: { fresh?: boolean } = {}): Promise<BasicProfile | null> {
+  const hit = profileMemo.get(token);
+  if (!opts.fresh && hit && Date.now() - hit.at < PROFILE_MEMO_MS) return hit.value;
+  const value = (async (): Promise<BasicProfile | null> => {
+    const r = await fetch('/me/profile', { headers: { authorization: `Bearer ${token}` } });
+    if (!r.ok) return null;
+    return ((await r.json()) as { profile: BasicProfile }).profile;
+  })();
+  profileMemo.set(token, { at: Date.now(), value });
+  value.then((p) => { if (p === null && profileMemo.get(token)?.value === value) profileMemo.delete(token); }, () => { if (profileMemo.get(token)?.value === value) profileMemo.delete(token); });
+  return value;
 }
 
 /** A related org the person holds (spec 246 / ADR-0025) — read from THEIR vault for the

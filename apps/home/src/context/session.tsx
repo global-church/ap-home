@@ -155,7 +155,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
 
   const refreshProfile = useCallback(async (): Promise<BasicProfile | null> => {
     if (!session) return null;
-    const p = await fetchProfile(session.token);
+    const p = await fetchProfile(session.token, { fresh: true });
     setProfile(p);
     return p;
   }, [session]);

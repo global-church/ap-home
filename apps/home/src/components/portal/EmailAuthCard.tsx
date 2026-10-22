@@ -266,7 +266,7 @@ export function EmailAuthCard({ onLinked, busyNote = 'Securing your home…', on
         // show the interstitial so they decide (continue / name the home / different email).
         const pending = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('pendingHomeName') : null;
         if (pending) {
-          const profile = await fetchProfile(d.token);
+          const profile = await fetchProfile(d.token, { fresh: true });
           const already = profile?.name ?? '';
           const chosen = nameLabel(pending) || pending;
           if (already && (nameLabel(already) || already) === (nameLabel(pending) || pending)) {

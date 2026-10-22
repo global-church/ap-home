@@ -15,10 +15,11 @@ const KNOWN: Record<number, Chain> = { [baseSepolia.id]: baseSepolia };
  *  answered in 3.8–5.4 s). */
 const PRIVATE_CHAIN_BLOCK_MS = 2_000;
 
-/** How often to ask whether a transaction has landed: half a block, as viem itself derives from `blockTime`. */
+/** How often to ask whether a transaction has landed: a quarter of a block (2026-10-21; it was half). On a 2 s chain
+ *  that is 500 ms, so a mined transaction is seen ~0.5 s sooner on average — a host waits on five of them. */
 export function receiptPollMs(env: { CHAIN_ID?: string; RPC_URL?: string }): number {
   const block = chainFor(env).blockTime ?? PRIVATE_CHAIN_BLOCK_MS;
-  return Math.min(Math.max(Math.floor(block / 2), 500), 4_000);
+  return Math.min(Math.max(Math.floor(block / 4), 500), 4_000);
 }
 
 /** Chain for `env.CHAIN_ID` (default Base Sepolia). Unknown ids get a minimal definition whose
