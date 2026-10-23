@@ -160,11 +160,14 @@ export async function handleDirectoryOp(ctx: DirectoryCtx, op: string, body: Rec
   if (op === 'directory.import') {
     const rows = Array.isArray(body.records) ? (body.records as { account?: unknown; email?: unknown; verifiedAt?: unknown; source?: unknown }[]) : [];
     let n = 0;
-    for (const r of rows.slice(0, 5000)) {
+    // One batch per call (the caller sends them one at a time): a single read says which accounts already have a
+    // record — a live record is newer than the old copy and is kept — so a batch costs one read plus its writes.
+    const batch = rows.slice(0, 50);
+    const have = await chunkedRead(ctx, grant, batch.map((r) => String(r.account ?? '').toLowerCase()).filter(isAccount));
+    for (const r of batch) {
       const account = String(r.account ?? '').toLowerCase();
       const email = cleanEmail(r.email);
-      if (!isAccount(account) || !email) continue;
-      if (readContact(await ctx.read(grant, contactKey(account)))) continue; // a live record is newer than the old copy
+      if (!isAccount(account) || !email || have.has(account)) continue;
       const at = typeof r.verifiedAt === 'number' ? r.verifiedAt : ctx.now();
       await ctx.write(grant, contactKey(account), { v: 2, email, verifiedAt: at, source: `import:${String(r.source ?? 'kv').slice(0, 60)}` } satisfies ContactRecord);
       n++;

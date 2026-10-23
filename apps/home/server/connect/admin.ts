@@ -237,8 +237,18 @@ export const onAdminDirectory = async ({ request, env }: FnContext): Promise<Res
     const keys = (await listKeys(env.AUTH_CODES, 'contact:0x')).map((k) => k.slice('contact:'.length));
     const found = await readContactEmails(env, keys);
     const records = [...found].map(([account, c]) => ({ account, email: c.email, verifiedAt: c.verifiedAt, source: c.source }));
-    const r = await directoryOp(env, op, { session: g.token, stewardship, records });
-    return json({ ...r.body, found: records.length }, r.status);
+    // Fifty at a time, one after another (the vault limits each account to 120 verified calls a minute), for at most
+    // ~40 s per request; the page calls again from `next` until it is done.
+    records.sort((a, b) => a.account.localeCompare(b.account));
+    const started = Date.now();
+    let imported = 0;
+    let i = Math.max(0, Number(body.offset ?? 0) || 0);
+    for (; i < records.length && Date.now() - started < 40_000; i += 50) {
+      const r = await directoryOp(env, op, { session: g.token, stewardship, records: records.slice(i, i + 50) });
+      if (r.status !== 200) return json({ ok: false, error: String(r.body.error ?? `the directory answered ${r.status}`), imported, found: records.length }, r.status);
+      imported += Number(r.body.imported ?? 0);
+    }
+    return json({ ok: true, imported, found: records.length, ...(i < records.length ? { next: i } : {}) });
   }
   const r = await directoryOp(env, op, { ...rest, session: g.token, stewardship });
   return json(r.body, r.status);

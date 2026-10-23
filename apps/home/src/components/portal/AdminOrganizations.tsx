@@ -192,8 +192,17 @@ export function AdminOrganizations({ session }: { session: Session }) {
   });
 
   const importOld = () => run(async () => {
-    const r = await directory<{ imported: number; found: number }>('import');
-    setNote(`Imported ${r.imported} of ${r.found} addresses from the old directory.`);
+    let imported = 0;
+    let found = 0;
+    let offset: number | undefined = 0;
+    while (offset !== undefined) {
+      const r: { imported: number; found: number; next?: number } = await directory('import', { offset });
+      imported += r.imported;
+      found = r.found;
+      offset = r.next;
+      setNote(`Importing… ${imported} so far of ${found}.`);
+    }
+    setNote(`Imported ${imported} addresses from the old directory (${found} found; ones already in the operator directory were kept).`);
     void loadSide();
   });
 
