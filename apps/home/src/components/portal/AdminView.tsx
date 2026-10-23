@@ -81,7 +81,7 @@ export function AdminView() {
       />
       <Tabs label="Admin" value={tab} onChange={setTab} items={[{ id: 'overview', label: 'Overview' }, { id: 'organizations', label: 'Organizations' }]} />
       {tab === 'organizations' ? (
-        session && <AdminOrganizations token={session.token} />
+        session && <AdminOrganizations session={session} />
       ) : (
         <>
           {error && <ErrorNote>{error}</ErrorNote>}

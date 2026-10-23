@@ -27,7 +27,7 @@ function harness() {
     async isSteward(org, sa, w) { return !!w && w.delegator === org && w.delegate === sa && (stewards[org] ?? []).includes(sa); },
     async grantSignatureOk(w) { return w.signature === '0xsig'; },
     recordScopes(w) { return (w as Wire & { scopes?: { resources: string[]; ops: string[] }[] }).scopes ?? null; },
-    expectedDelegate: SERVICE,
+    expectedDelegate: async () => SERVICE,
     async getGrant() { return grant; },
     async setGrant(w) { grant = w; },
     async read(_g, r) { return vault.get(r) ?? null; },

@@ -18,6 +18,7 @@ import { sendEmail, emailSendingEnabled } from '../_lib/email-sender';
 import { emailHash } from '../../src/lib/kv-indexer';
 import { whitelabel } from '../../src/whitelabel/config';
 import { accountAddress, recordContactEmail } from '../_lib/contact-directory';
+import { operatorOrg, recordOrgVerified } from '../_lib/operator-directory';
 import { reportHomeError } from '../_lib/home-sentry';
 
 const cors = { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'content-type, authorization' };
@@ -124,7 +125,14 @@ export const onVerify = async ({ request, env }: FnContext): Promise<Response> =
   }
   await env.AUTH_CODES.delete(key);
   const verifiedAt = Date.now();
-  await recordContactEmail(env, g.org, email, `org-verified:${g.person}`, verifiedAt);
+  if (operatorOrg(env)) {
+    // The operator directory (2026-10-23): written with the steward's own session; the DO re-checks their stewardship.
+    const auth = request.headers.get('authorization') ?? '';
+    const r = await recordOrgVerified(env, auth.startsWith('Bearer ') ? auth.slice(7) : '', g.person, g.org, email);
+    if (!r.ok) return json({ error: 'The address was confirmed, but saving it to GCID’s directory failed. Try again.' }, 502);
+  } else {
+    await recordContactEmail(env, g.org, email, `org-verified:${g.person}`, verifiedAt);
+  }
   console.info('[org-contact] verified', { org: g.org, by: g.person, at: new Date(verifiedAt).toISOString() });
   return json({ ok: true, email, verifiedAt });
 };

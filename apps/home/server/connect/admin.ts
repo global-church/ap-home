@@ -17,11 +17,13 @@ import {
 import { costQueries, parseLabels, shapeCosts, type CostTable, type CostsResult } from '../../src/lib/azure-costs';
 import { TEST_AGENT_PREFIX, testAddresses } from '../../src/lib/test-identity';
 import { accountAddress, contactDirectoryEnabled, contactViews, readContactEmails, recordContactView, type ContactView } from '../_lib/contact-directory';
+import { directoryOp, operatorAdmin, operatorOrg } from '../_lib/operator-directory';
+import type { IncomingDelegation } from '../_lib/verify-delegation';
 
 const json = (b: unknown, s = 200): Response =>
   new Response(JSON.stringify(b), { status: s, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
 
-type Gate = { ok: true; admin: boolean; sub: string } | { ok: false; res: Response };
+type Gate = { ok: true; admin: boolean; sub: string; token: string; stewardship: IncomingDelegation | null } | { ok: false; res: Response };
 
 async function session(request: Request, env: Env): Promise<Gate> {
   const auth = request.headers.get('authorization') ?? '';
@@ -31,7 +33,13 @@ async function session(request: Request, env: Env): Promise<Gate> {
   const keys = await importJwks(jwks);
   const v = await verifyAgentSession(token, { keys, expectedAud: env.DEMO_SSO_AUD ?? 'demo-sso', expectedIss: ownIssuer(request, env) });
   if (!v.ok) return { ok: false, res: json({ error: 'invalid session' }, 401) };
-  return { ok: true, admin: isAdmin(v.session.sub, parseAdmins(env.HOME_ADMINS)), sub: String(v.session.sub) };
+  // With an operator org configured (2026-10-23), an admin is a STEWARD of it, verified on-chain (operator-directory.ts);
+  // HOME_ADMINS no longer counts. Without one, the list as before. A switch, not a fallback.
+  if (operatorOrg(env)) {
+    const stewardship = await operatorAdmin(env, accountAddress(String(v.session.sub)) ?? '');
+    return { ok: true, admin: !!stewardship, sub: String(v.session.sub), token, stewardship };
+  }
+  return { ok: true, admin: isAdmin(v.session.sub, parseAdmins(env.HOME_ADMINS)), sub: String(v.session.sub), token, stewardship: null };
 }
 
 /** 401 without a valid session, 403 for anyone not on HOME_ADMINS; null = go ahead. */
@@ -44,7 +52,8 @@ export async function requireAdmin(request: Request, env: Env): Promise<Response
 /** Whether to show the Admin row. A bad session is simply "no". */
 export const onAdminMe = async ({ request, env }: FnContext): Promise<Response> => {
   const g = await session(request, env);
-  return json({ admin: g.ok && g.admin });
+  // The operator org's address (2026-10-23), so an admin's page can sign the one-time directory grant as it.
+  return json({ admin: g.ok && g.admin, ...(g.ok && g.admin && operatorOrg(env) ? { operatorOrg: operatorOrg(env) } : {}) });
 };
 
 // ── Accounts ─────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -161,6 +170,9 @@ export interface OrganizationsView {
   app: string;
   /** False when this Home has no CONTACT_DIRECTORY_KEY: organizations are listed, emails are not. */
   emails: boolean;
+  /** True with the operator directory (2026-10-23): every address here is MASKED; a full one comes from a reveal or an
+   *  approved export (POST /connect/admin/directory). */
+  masked?: boolean;
   orgs: OrganizationRow[];
   /** The last views of this list, newest first (this one included). */
   views: ContactView[];
@@ -176,6 +188,18 @@ export const onAdminOrganizations = async ({ request, env }: FnContext): Promise
   const kv = env.AUTH_CODES;
   const testPeople = testAddresses(await listKeys(kv, TEST_AGENT_PREFIX));
   const orgs = listAppOrganizations(await readAll(kv, await listKeys(kv, 'related:')), app, testPeople);
+  if (operatorOrg(env)) {
+    const accounts = [...new Set(orgs.flatMap((o) => [o.org, ...o.stewards]))];
+    const r = await directoryOp(env, 'directory.masked', { session: g.token, stewardship: g.stewardship, accounts });
+    if (r.status !== 200) return json({ error: String(r.body.error ?? 'the directory is unavailable') }, r.status === 409 ? 409 : 502);
+    const c = (r.body.contacts ?? {}) as Record<string, { masked: string; verifiedAt: number; source: string }>;
+    const rowsM: OrganizationRow[] = orgs.map(({ stewards, ...o }) => ({
+      ...o,
+      orgContact: c[o.org] ? { email: c[o.org]!.masked, verifiedAt: c[o.org]!.verifiedAt, changed: c[o.org]!.source === 'org-verified' } : null,
+      contacts: stewards.map((account) => ({ account, email: c[account]?.masked ?? null, verifiedAt: c[account]?.verifiedAt ?? null })),
+    }));
+    return json({ apps: [...ADMIN_APPS], app, emails: true, masked: true, orgs: rowsM, views: [], asOf: Date.now() } satisfies OrganizationsView);
+  }
   const emails = contactDirectoryEnabled(env);
   const found = emails ? await readContactEmails(env, orgs.flatMap((o) => [o.org, ...o.stewards])) : new Map();
   const rows: OrganizationRow[] = orgs.map(({ stewards, ...o }) => ({
@@ -186,6 +210,38 @@ export const onAdminOrganizations = async ({ request, env }: FnContext): Promise
   const now = Date.now();
   if (emails) await recordContactView(kv, { by: accountAddress(g.sub) ?? g.sub, at: now, what: `organizations: ${app}`, count: found.size });
   return json({ apps: [...ADMIN_APPS], app, emails, orgs: rows, views: await contactViews(kv, 10), asOf: now } satisfies OrganizationsView);
+};
+
+// ── The operator directory's admin actions (2026-10-23) ──────────────────────────────────────────────────────────
+// POST /connect/admin/directory {action, ...}: reveal one address, the audit log, and the two-admin export (request,
+// list, approve, deny, fetch). Each carries the admin's own session and stewardship to the operator org's DO, which
+// decides and records. `import` moves the old encrypted KV directory in, once.
+const DIRECTORY_ACTIONS: Record<string, string> = {
+  reveal: 'directory.reveal', audit: 'directory.audit', 'export-request': 'export.request', 'export-list': 'export.list',
+  'export-approve': 'export.approve', 'export-deny': 'export.deny', 'export-fetch': 'export.fetch', import: 'directory.import', enable: 'directory.enable',
+};
+
+export const onAdminDirectory = async ({ request, env }: FnContext): Promise<Response> => {
+  if (!operatorOrg(env)) return json({ error: 'the operator directory is not configured' }, 503);
+  const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+  const op = DIRECTORY_ACTIONS[String(body.action ?? '')];
+  if (!op) return json({ error: 'unknown action' }, 400);
+  const g = await session(request, env);
+  if (!g.ok) return g.res;
+  // `enable` is the one action before anyone is an admin by the directory's own rules: the DO checks stewardship itself.
+  const stewardship = g.stewardship ?? (op === 'directory.enable' ? body.stewardship : null);
+  if (!g.admin && op !== 'directory.enable') return json({ error: 'not an admin of this Home' }, 403);
+  const { action: _a, session: _s, stewardship: _w, ...rest } = body;
+  if (op === 'directory.import') {
+    // The old KV copies, decrypted once here with the old key and handed to the DO, which records the import.
+    const keys = (await listKeys(env.AUTH_CODES, 'contact:0x')).map((k) => k.slice('contact:'.length));
+    const found = await readContactEmails(env, keys);
+    const records = [...found].map(([account, c]) => ({ account, email: c.email, verifiedAt: c.verifiedAt, source: c.source }));
+    const r = await directoryOp(env, op, { session: g.token, stewardship, records });
+    return json({ ...r.body, found: records.length }, r.status);
+  }
+  const r = await directoryOp(env, op, { ...rest, session: g.token, stewardship });
+  return json(r.body, r.status);
 };
 
 // ── Azure ────────────────────────────────────────────────────────────────────────────────────────────────────────

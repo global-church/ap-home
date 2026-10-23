@@ -316,6 +316,32 @@ export async function issueInboxDeliveryDelegation(
   return delegation;
 }
 
+/** The OPERATOR DIRECTORY grant (2026-10-23; gc-estate/docs/operator-workspace.md): the operator org lets the
+ *  directory service (the same DO-held delegate as inbox delivery) read and write exactly its directory records —
+ *  contacts, the audit log, export requests — and nothing else. Held only by the operator org's InteractionsDO, which
+ *  refuses any other scope (`directoryScopeExact`). Signed as the org by someone who custodies it. */
+export const OPERATOR_DIRECTORY_SCOPE = ['vault:contact:*', 'vault:directory.audit:*', 'vault:export:*'] as const;
+export async function issueOperatorDirectoryDelegation(
+  operatorOrg: Address,
+  directoryServiceSA: Address,
+  mcpServerId: string,
+  signHash: SignHash,
+  validitySeconds = 60 * 60 * 24 * 365,
+): Promise<Delegation> {
+  const validUntil = Math.floor(Date.now() / 1000) + validitySeconds;
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  let salt = 0n;
+  for (const b of bytes) salt = (salt << 8n) | BigInt(b);
+  const caveats: Caveat[] = [
+    buildVaultRecordScopeCaveat([{ server: mcpServerId, resources: [...OPERATOR_DIRECTORY_SCOPE], ops: ['read', 'write'] }]),
+    buildCaveat(CONTRACTS.timestampEnforcer, encodeTimestampTerms(0, validUntil)),
+    buildCaveat(CONTRACTS.valueEnforcer, encodeValueTerms(0n)),
+  ];
+  const delegation: Delegation = { delegator: operatorOrg, delegate: directoryServiceSA, authority: ROOT_AUTHORITY, caveats, salt, signature: '0x' };
+  delegation.signature = await signHash(hashDelegation(delegation, CHAIN_ID, CONTRACTS.delegationManager));
+  return delegation;
+}
+
 /** spec 253 batching — the inbox-delivery grant WITHOUT an off-chain signature: the recipient (person SA
  *  being deployed) pre-approves this digest via `approveHash(digest)` batched into its own deploy userOp,
  *  so the wire validates through the SA's `0x03` approved-hash ERC-1271 branch — no per-grant passkey. */

@@ -5,6 +5,7 @@
 // Each agent is an on-chain SA with an EXACT name, custodied by the member's ROOT credential,
 // created in one gasless prompt. Links are PRIVATE vault credentials (ADR-0025), read back from
 // the same /connect/related-orgs vault (MAM-D7) via listManagedAgents.
+import { CoManagerOffers } from './CoManagers';
 import { useEffect, useState } from 'react';
 import { ExplorerLink } from '../shared/ExplorerLink';
 import { FleetLines } from './FleetLines';
@@ -611,6 +612,8 @@ export function OrganizationsManager({
 
   return (
     <div className="dash-section">
+      {/* Offers to co-manage an organization, accepted here as yourself (2026-10-23, CoManagers.tsx). */}
+      <CoManagerOffers session={{ token, via, fresh: false }} />
       {/* STRUCTURE FIRST (owner, 2026-10-02): the filter and the prominent "Add an organization" card render
           immediately — neither needs the agent tree — and the rows skeleton while that read is out. */}
       <Filter />

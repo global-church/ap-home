@@ -234,7 +234,10 @@ export interface AppOrgType { iri: string | null; label?: string; other?: string
 
 export interface AppOrg {
   org: string;
+  /** The display name the person typed ("Richmond Gather"), or the handle when none was given. */
   name: string;
+  /** The organization's handle (richmond-gather.org), when it differs from the name. */
+  handle: string;
   createdAt: number | null;
   type: AppOrgType | null;
   /** Person addresses that manage it, earliest link first. */
@@ -244,7 +247,7 @@ export interface AppOrg {
 }
 
 type LinkValue = {
-  orgName?: string; kind?: string; relationship?: string; status?: string; createdAt?: number;
+  orgName?: string; displayName?: string; kind?: string; relationship?: string; status?: string; createdAt?: number;
   requestedBy?: string; governor?: string; orgType?: { iri?: unknown; label?: unknown; other?: unknown };
 };
 
@@ -288,10 +291,11 @@ export function listAppOrganizations(
     const rel = (v.relationship ?? '').toLowerCase();
     const kind = (v.kind ?? 'org').toLowerCase();
     if (kind === 'person' || rel === 'self') continue;
-    const o = byOrg.get(org) ?? { org, name: '', createdAt: null, type: null, stewards: [], members: 0, test: false, deleted: false, workspace: false, firstAt: new Map() };
+    const o = byOrg.get(org) ?? { org, name: '', handle: '', createdAt: null, type: null, stewards: [], members: 0, test: false, deleted: false, workspace: false, firstAt: new Map() };
     const at = typeof v.createdAt === 'number' ? v.createdAt : null;
     if (at !== null && (o.createdAt === null || at < o.createdAt)) o.createdAt = at;
-    if (!o.name && v.orgName && v.orgName.toLowerCase() !== org) o.name = v.orgName;
+    if (!o.handle && v.orgName && v.orgName.toLowerCase() !== org) o.handle = v.orgName;
+    if (!o.name && v.displayName) o.name = v.displayName;
     o.type ??= readType(v.orgType);
     if (v.status === 'deleted') o.deleted = true;
     if (kind === 'workspace') o.workspace = true;
@@ -304,7 +308,7 @@ export function listAppOrganizations(
     if (o.deleted || o.workspace) continue;
     const stewards = [...o.firstAt.entries()].sort((a, b) => a[1] - b[1]).map(([p]) => p);
     out.push({
-      org: o.org, name: o.name, createdAt: o.createdAt, type: o.type, stewards, members: o.members,
+      org: o.org, name: o.name || o.handle, handle: o.name && o.name !== o.handle ? o.handle : '', createdAt: o.createdAt, type: o.type, stewards, members: o.members,
       test: stewards.length > 0 && stewards.every((p) => testPeople.has(p)),
     });
   }

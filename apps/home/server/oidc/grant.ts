@@ -30,6 +30,7 @@ import type { StoredEnrollmentGrant } from './authorize-grant';
 import { idTokenTtl } from '../_lib/session-ttl';
 import { nameClaimForIdToken } from '../../src/lib/new-member';
 import { defaultOrgContact } from '../_lib/contact-directory';
+import { operatorOrg, recordOrgDefault } from '../_lib/operator-directory';
 
 const CODE_TTL_MS = 300_000; // 5 min PKCE exchange window
 
@@ -262,7 +263,7 @@ export const onRequestPost = async ({ request, env }: FnContext): Promise<Respon
     // The organization's contact email starts as this person's verified one, if it has none yet (org-contact.ts).
     // Organizations only: not a workspace, not a person's own name, not a membership.
     if (link.kind !== 'workspace' && link.kind !== 'person' && (existing.relationship ?? '') !== 'member') {
-      await defaultOrgContact(env, person, org);
+      await (operatorOrg(env) ? recordOrgDefault(env, request, person, org, link.stewardshipDelegation) : defaultOrgContact(env, person, org));
     }
     const idxKey = `related-idx:${person}`;
     const idx = JSON.parse((await env.AUTH_CODES.get(idxKey)) ?? '[]') as string[];

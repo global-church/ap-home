@@ -18,6 +18,7 @@ import { CONTRACTS } from '../../lib/chain';
 import { vaultListWithDelegation, vaultReadWithDelegation, vaultWriteWithDelegation, type VaultRecordRef } from '../../lib/vault-client';
 import { AddressChip } from '../shared/AddressChip';
 import { OrgContactEmail } from './OrgContactEmail';
+import { CoManagers } from './CoManagers';
 import { BuildingIcon, LinkIcon } from '../shared/Icons';
 
 import { Loading } from '../shared/Loading';
@@ -449,6 +450,7 @@ export function OrgMembers({ org, token }: { org: MyOrg; token: string | null })
 }
 
 export function OrgDetail({ org, token, onBack }: { org: MyOrg; token: string | null; onBack: () => void }) {
+  const { session } = useSession();
   const created = org.createdAt ? new Date(org.createdAt).toLocaleString() : '—';
   // The roles this org can offer, read from ITS OWN library — the same packages the harness
   // composes from, so the panel can never offer a role whose definition the host would fail to
@@ -513,6 +515,7 @@ export function OrgDetail({ org, token, onBack }: { org: MyOrg; token: string | 
       {org.stewardshipDelegation ? (
         <>
           <OrgProfileManager delegation={org.stewardshipDelegation} />
+          {session && <CoManagers org={org.orgAgent} session={session} />}
           <VaultReader
             title="All organization records"
             hint="Every record in the org's vault, read with your stewardship delegation (org → you). The org owns this data; you oversee it."

@@ -1,15 +1,34 @@
 'use client';
-// ADMIN → ORGANIZATIONS (Global.Church, 2026-10-22). Every organization an app brought to this Home — Gather is the
-// only app today — with its type and the email of each person who manages it, searchable and filterable, and a CSV
-// download. Replaces the one-at-a-time Contact lookup. The server (`/connect/admin/organizations`) decides who may
-// see it and records each view; the last views are shown at the foot of the page.
+// ADMIN → ORGANIZATIONS (Global.Church, 2026-10-22; operator directory 2026-10-23). Every organization an app brought
+// to this Home — Gather is the only app today — with its type and how to reach it, searchable and filterable.
+//
+// With the operator directory (the server says `masked`), addresses are MASKED. A full address comes from "Show" on
+// one row (recorded) or from an export that a SECOND admin approved: one admin requests, another approves, the
+// requester downloads it once within 30 minutes. Every step is recorded in the operator org's vault and shown here.
+// Without it (no operator org configured yet), the page is what it was: full addresses and a direct CSV.
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import type { Address } from '@agenticprimitives/types';
 import { Section, Stats, Stat, Empty, ErrorNote, Note, Button, Meta, Mono, SkeletonRows, SearchInput, FilterChip, Toolbar } from '../../ui';
 import type { OrganizationRow, OrganizationsView } from '../../../server/connect/admin';
+import type { Session } from '../../context/session';
+import { fetchProfile } from '../../connect-client';
+import { resolveVia, signHashFor } from '../../home/onboarding';
+import { issueOperatorDirectoryDelegation } from '../../lib/delegation';
+import { INTERACTIONS_SERVICE_SA, MCP_SERVER_ID } from '../../lib/inbox-delivery';
 
 const when = (t: number) => new Date(t).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 const day = (t: number) => new Date(t).toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' });
 const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
+
+/** The account this session belongs to (the `sub` of the Home session JWT), lower-case. */
+function myAccount(token: string): string {
+  try {
+    const p = JSON.parse(atob(token.split('.')[1]!.replace(/-/g, '+').replace(/_/g, '/'))) as { sub?: string };
+    return (p.sub?.match(/0x[0-9a-fA-F]{40}$/)?.[0] ?? '').toLowerCase();
+  } catch {
+    return '';
+  }
+}
 
 /** The filter key for a row's type: an ontology IRI, 'other', or 'none'. */
 const typeKey = (o: OrganizationRow) => (!o.type ? 'none' : o.type.iri === null ? 'other' : o.type.iri);
@@ -17,41 +36,90 @@ const typeKey = (o: OrganizationRow) => (!o.type ? 'none' : o.type.iri === null 
 const reachable = (o: OrganizationRow) => !!o.orgContact || o.contacts.some((c) => c.email);
 const typeText = (o: OrganizationRow) => (!o.type ? '' : o.type.iri === null ? `Other: ${o.type.other ?? ''}` : o.type.label ?? '');
 
-function csv(rows: OrganizationRow[]): string {
+/** The CSV, from the rows on screen; `emails` overrides what the rows carry (the full addresses of an approved export). */
+function csv(rows: OrganizationRow[], emails?: Map<string, string | null>): string {
   const cell = (v: unknown) => {
     const s = String(v ?? '');
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
+  const em = (account: string, fallback: string | null | undefined) => (emails ? emails.get(account) ?? '' : fallback ?? '');
   const head = ['Organization', 'Organization address', 'Type', 'Other answer', 'Organization contact', 'Manager emails', 'Managers', 'Members', 'Created'];
   const body = rows.map((o) => [
     o.name, o.org, o.type?.iri === null ? 'Other' : o.type?.label ?? '', o.type?.iri === null ? o.type.other ?? '' : '',
-    o.orgContact?.email ?? '', o.contacts.map((c) => c.email).filter(Boolean).join('; '), o.contacts.length, o.members,
+    em(o.org, o.orgContact?.email), o.contacts.map((c) => em(c.account, c.email)).filter(Boolean).join('; '), o.contacts.length, o.members,
     o.createdAt ? new Date(o.createdAt).toISOString().slice(0, 10) : '',
   ].map(cell).join(','));
   return [head.join(','), ...body].join('\r\n');
 }
 
-export function AdminOrganizations({ token }: { token: string }) {
+function save(name: string, text: string) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type: 'text/csv' }));
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+interface ExportSummary { id: string; app: string; requestedBy: string; requestedAt: number; note?: string; approvedBy?: string; approvedAt?: number; deniedBy?: string; count: number; status: 'pending' | 'approved' | 'downloaded' | 'denied' | 'expired' }
+interface AuditEntry { at: number; by: string; kind: string; accounts?: number; account?: string; exportId?: string }
+
+const AUDIT_WORDS: Record<string, string> = {
+  list: 'opened the list', reveal: 'showed one address', 'export-request': 'requested an export', 'export-approve': 'approved an export',
+  'export-deny': 'denied an export', 'export-fetch': 'downloaded an export', import: 'imported the old directory', enable: 'enabled the directory',
+};
+
+export function AdminOrganizations({ session }: { session: Session }) {
+  const token = session.token;
+  const me = useMemo(() => myAccount(token), [token]);
   const [app, setApp] = useState('gather-app');
   const [view, setView] = useState<OrganizationsView | null | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
+  const [notEnabled, setNotEnabled] = useState(false);
   const [busy, setBusy] = useState(false);
   const [q, setQ] = useState('');
   const [type, setType] = useState<string>('all');
   const [noEmail, setNoEmail] = useState(false);
   const [showTest, setShowTest] = useState(false);
+  const [revealed, setRevealed] = useState<Record<string, string | null>>({});
+  const [exportsList, setExports] = useState<ExportSummary[]>([]);
+  const [activity, setActivity] = useState<AuditEntry[]>([]);
+  const [note, setNote] = useState<string | null>(null);
+
+  const directory = useCallback(async <T,>(action: string, extra: Record<string, unknown> = {}): Promise<T> => {
+    const r = await fetch('/connect/admin/directory', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify({ action, ...extra }),
+    }).catch(() => null);
+    const j = (await r?.json().catch(() => null)) as (T & { error?: string }) | null;
+    if (!r?.ok || !j) throw new Error(j?.error ?? (r ? `HTTP ${r.status}` : 'The Home did not answer.'));
+    return j;
+  }, [token]);
+
+  const loadSide = useCallback(async () => {
+    try { setExports((await directory<{ requests: ExportSummary[] }>('export-list')).requests ?? []); } catch { /* shown on the next action */ }
+    try { setActivity((await directory<{ entries: AuditEntry[] }>('audit', { limit: 20 })).entries ?? []); } catch { /* idem */ }
+  }, [directory]);
 
   const load = useCallback(async () => {
     setBusy(true);
     setError(null);
+    setNotEnabled(false);
     const r = await fetch(`/connect/admin/organizations?app=${encodeURIComponent(app)}`, { headers: { authorization: `Bearer ${token}` } }).catch(() => null);
     const j = (await r?.json().catch(() => null)) as (OrganizationsView & { error?: string }) | null;
     setBusy(false);
-    if (r?.ok && j) setView(j);
-    else { setView(null); setError(j?.error ?? (r ? `HTTP ${r.status}` : 'The Home did not answer.')); }
-  }, [app, token]);
+    if (r?.ok && j) {
+      setView(j);
+      if (j.masked) void loadSide();
+    } else {
+      setView(null);
+      if (r?.status === 409) setNotEnabled(true);
+      else setError(j?.error ?? (r ? `HTTP ${r.status}` : 'The Home did not answer.'));
+    }
+  }, [app, token, loadSide]);
   useEffect(() => { void load(); }, [load]);
 
+  const masked = view?.masked === true;
   const base = useMemo(() => (view?.orgs ?? []).filter((o) => showTest || !o.test), [view, showTest]);
   const types = useMemo(() => {
     const m = new Map<string, { label: string; count: number }>();
@@ -60,7 +128,6 @@ export function AdminOrganizations({ token }: { token: string }) {
       const label = k === 'none' ? 'No type yet' : k === 'other' ? 'Other' : o.type?.label ?? k;
       m.set(k, { label, count: (m.get(k)?.count ?? 0) + 1 });
     }
-    // Listed types by count, then Other, then No type.
     return [...m.entries()].sort(([a, x], [b, y]) => {
       const rank = (k: string) => (k === 'other' ? 1 : k === 'none' ? 2 : 0);
       return rank(a) - rank(b) || y.count - x.count || x.label.localeCompare(y.label);
@@ -76,17 +143,75 @@ export function AdminOrganizations({ token }: { token: string }) {
     });
   }, [base, q, type, noEmail]);
 
-  const download = () => {
-    const blob = new Blob([csv(shown)], { type: 'text/csv' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `${view?.apps.find((x) => x.id === app)?.label ?? app}-organizations-${new Date().toISOString().slice(0, 10)}.csv`;
-    a.click();
-    URL.revokeObjectURL(a.href);
+  const fileName = () => `${view?.apps.find((x) => x.id === app)?.label ?? app}-organizations-${new Date().toISOString().slice(0, 10)}.csv`;
+
+  const run = async (fn: () => Promise<void>) => {
+    setError(null);
+    setNote(null);
+    try { await fn(); } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+  };
+
+  const reveal = (account: string) => run(async () => {
+    const r = await directory<{ email: string | null }>('reveal', { account });
+    setRevealed((s) => ({ ...s, [account]: r.email }));
+    void loadSide();
+  });
+
+  const requestExport = () => run(async () => {
+    const why = window.prompt('Why is this export needed? (The second admin sees this.)', '') ?? null;
+    if (why === null) return;
+    const accounts = [...new Set(shown.flatMap((o) => [o.org, ...o.contacts.map((c) => c.account)]))];
+    await directory('export-request', { app, accounts, note: why });
+    setNote(`Export requested for ${shown.length} organization${shown.length === 1 ? '' : 's'}. Another admin has to approve it before you can download it.`);
+    void loadSide();
+  });
+
+  const decide = (id: string, action: 'export-approve' | 'export-deny') => run(async () => {
+    await directory(action, { id });
+    void loadSide();
+  });
+
+  const fetchExport = (r: ExportSummary) => run(async () => {
+    const got = await directory<{ rows: { account: string; email: string | null }[] }>('export-fetch', { id: r.id });
+    const emails = new Map(got.rows.map((x) => [x.account, x.email]));
+    const rows = (view?.orgs ?? []).filter((o) => emails.has(o.org) || o.contacts.some((c) => emails.has(c.account)));
+    save(fileName(), csv(rows, emails));
+    void loadSide();
+  });
+
+  const enable = () => run(async () => {
+    const me2 = await fetch('/connect/admin/me', { headers: { authorization: `Bearer ${token}` } }).then((r) => r.json()).catch(() => ({})) as { operatorOrg?: string };
+    if (!me2.operatorOrg) throw new Error('No operator organization is configured for this Home.');
+    if (!INTERACTIONS_SERVICE_SA) throw new Error('This Home has no interactions service configured.');
+    const profile = await fetchProfile(token);
+    const sign = await signHashFor(resolveVia(profile?.credential, session.via), me2.operatorOrg as Address, { token });
+    const delegation = await issueOperatorDirectoryDelegation(me2.operatorOrg as Address, INTERACTIONS_SERVICE_SA, MCP_SERVER_ID, sign);
+    await directory('enable', { delegation: { ...delegation, salt: delegation.salt.toString() } });
+    setNote('The operator directory is enabled.');
+    await load();
+  });
+
+  const importOld = () => run(async () => {
+    const r = await directory<{ imported: number; found: number }>('import');
+    setNote(`Imported ${r.imported} of ${r.found} addresses from the old directory.`);
+    void loadSide();
+  });
+
+  const emailCell = (account: string, value: string | null | undefined) => {
+    if (!value) return null;
+    if (!masked) return <a href={`mailto:${value}`}>{value}</a>;
+    if (account in revealed) return revealed[account] ? <a href={`mailto:${revealed[account]}`}>{revealed[account]}</a> : <Meta>not on file</Meta>;
+    return (
+      <>
+        <span className="admin-orgs__masked">{value}</span>{' '}
+        <button type="button" className="admin-orgs__reveal" onClick={() => void reveal(account)} data-testid={`admin-orgs-reveal-${account.slice(2, 10)}`}>Show</button>
+      </>
+    );
   };
 
   const withEmail = base.filter(reachable).length;
   const testCount = (view?.orgs ?? []).filter((o) => o.test).length;
+  const pending = exportsList.filter((r) => r.status === 'pending' || r.status === 'approved');
 
   return (
     <>
@@ -98,14 +223,26 @@ export function AdminOrganizations({ token }: { token: string }) {
           </select>
         </label>
         <div className="admin-orgs__search">
-          <SearchInput value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search name, email, type or address" aria-label="Search organizations" data-testid="admin-orgs-q" />
+          <SearchInput value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search name, type or address" aria-label="Search organizations" data-testid="admin-orgs-q" />
         </div>
-        <Button size="sm" onClick={download} disabled={!shown.length} data-testid="admin-orgs-csv">Download CSV</Button>
+        {masked ? (
+          <Button size="sm" onClick={() => void requestExport()} disabled={!shown.length} data-testid="admin-orgs-export-request">Request export</Button>
+        ) : (
+          <Button size="sm" onClick={() => save(fileName(), csv(shown))} disabled={!shown.length || !view} data-testid="admin-orgs-csv">Download CSV</Button>
+        )}
         <Button size="sm" onClick={() => void load()} disabled={busy}>{busy ? 'Loading…' : 'Refresh'}</Button>
       </Toolbar>
       {error && <ErrorNote>{error}</ErrorNote>}
-      {view === undefined && <SkeletonRows rows={5} lead />}
-      {view === null && !error && <Empty title="Organizations are unavailable" />}
+      {note && <Note>{note}</Note>}
+      {notEnabled && (
+        <Empty title="The operator directory is not enabled yet">
+          Contact emails live in the operator organization&rsquo;s vault. Enabling signs a grant, as the operator organization, that lets the
+          directory service keep them there and nothing else.{' '}
+          <Button size="sm" onClick={() => void enable()} data-testid="admin-orgs-enable">Enable the operator directory</Button>
+        </Empty>
+      )}
+      {view === undefined && !notEnabled && <SkeletonRows rows={5} lead />}
+      {view === null && !error && !notEnabled && <Empty title="Organizations are unavailable" />}
       {view && (
         <>
           <Stats>
@@ -113,6 +250,36 @@ export function AdminOrganizations({ token }: { token: string }) {
             <Stat label="with a contact email" value={withEmail.toLocaleString()} />
             <Stat label="no type yet" value={(types.find(([k]) => k === 'none')?.[1].count ?? 0).toLocaleString()} />
           </Stats>
+          {masked && pending.length > 0 && (
+            <Section title="Export requests" count={pending.length} testId="admin-orgs-exports">
+              <div className="admin-orgs__scroll">
+                <table className="admin-orgs__table">
+                  <thead><tr><th>Requested</th><th>By</th><th>Rows</th><th>Why</th><th>Status</th><th /></tr></thead>
+                  <tbody>
+                    {pending.map((r) => (
+                      <tr key={r.id} data-testid={`admin-orgs-export-${r.id.slice(0, 8)}`}>
+                        <td>{when(r.requestedAt)}</td>
+                        <td><Mono title={r.requestedBy}>{r.requestedBy === me ? 'you' : short(r.requestedBy)}</Mono></td>
+                        <td>{r.count}</td>
+                        <td>{r.note || <Meta>—</Meta>}</td>
+                        <td>{r.status === 'pending' ? 'waiting for a second admin' : `approved by ${r.approvedBy === me ? 'you' : short(r.approvedBy ?? '')}`}</td>
+                        <td>
+                          {r.status === 'pending' && r.requestedBy !== me && (
+                            <>
+                              <Button size="sm" onClick={() => void decide(r.id, 'export-approve')}>Approve</Button>{' '}
+                              <Button size="sm" variant="ghost" onClick={() => void decide(r.id, 'export-deny')}>Deny</Button>
+                            </>
+                          )}
+                          {r.status === 'approved' && r.requestedBy === me && <Button size="sm" onClick={() => void fetchExport(r)}>Download</Button>}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <Note>An export needs a second admin. Once approved, the admin who requested it can download it once, within 30 minutes.</Note>
+            </Section>
+          )}
           <div className="admin-orgs__filters" role="group" aria-label="Filter by type">
             <FilterChip active={type === 'all'} count={base.length} onClick={() => setType('all')}>All types</FilterChip>
             {types.map(([k, t]) => (
@@ -138,6 +305,7 @@ export function AdminOrganizations({ token }: { token: string }) {
                         <td>
                           <strong>{o.name || 'Unnamed organization'}</strong>
                           {o.test && <> <Meta>test</Meta></>}
+                          {o.handle && <div><Meta>{o.handle}</Meta></div>}
                           <div><Mono title={o.org}>{short(o.org)}</Mono></div>
                         </td>
                         <td>
@@ -146,7 +314,7 @@ export function AdminOrganizations({ token }: { token: string }) {
                         <td>
                           {o.orgContact ? (
                             <div className="admin-orgs__org-contact">
-                              <a href={`mailto:${o.orgContact.email}`}>{o.orgContact.email}</a>
+                              {emailCell(o.org, o.orgContact.email)}
                               <div><Meta>{o.orgContact.changed ? `organization contact · confirmed ${day(o.orgContact.verifiedAt)}` : 'organization contact · from its creator'}</Meta></div>
                             </div>
                           ) : (
@@ -156,7 +324,7 @@ export function AdminOrganizations({ token }: { token: string }) {
                           {o.contacts.length === 0 && <Meta>No manager found</Meta>}
                           {o.contacts.map((c) => (
                             <div key={c.account}>
-                              {c.email ? <a href={`mailto:${c.email}`}>{c.email}</a> : <span title={c.account}><Meta>No email on file ({short(c.account)})</Meta></span>}
+                              {c.email ? emailCell(c.account, c.email) : <span title={c.account}><Meta>No email on file ({short(c.account)})</Meta></span>}
                             </div>
                           ))}
                         </td>
@@ -172,9 +340,24 @@ export function AdminOrganizations({ token }: { token: string }) {
           <Note>
             Each organization&rsquo;s contact starts as the email of the person who created it, and changes only when someone who manages it
             confirms a new address with a code. Below it are the people who manage it, at the email they sign in with; members are counted, not
-            listed. Organizations created before 22 Oct have none until someone who manages them adds one on the organization&rsquo;s page in GCID. Every time this list is opened is recorded with your account and the time.
+            listed.{' '}
+            {masked
+              ? 'Addresses are masked. "Show" reveals one and is recorded; a full export needs a second admin to approve it. Every view, reveal and export is recorded in the operator organization’s vault.'
+              : 'Every time this list is opened is recorded with your account and the time.'}
           </Note>
-          {view.views.length > 0 && (
+          {masked && activity.length > 0 && (
+            <Section title="Recent directory activity" testId="admin-orgs-activity">
+              <Note>
+                {activity.map((e) => `${e.by === me ? 'You' : short(e.by)} ${AUDIT_WORDS[e.kind] ?? e.kind}${e.accounts !== undefined ? ` (${e.accounts})` : ''} · ${when(e.at)}`).join('  ·  ')}
+              </Note>
+            </Section>
+          )}
+          {masked && (
+            <Note>
+              Moving from the old directory? <button type="button" className="admin-orgs__reveal" onClick={() => void importOld()} data-testid="admin-orgs-import">Import the old directory</button> (once; addresses already in the operator directory are kept).
+            </Note>
+          )}
+          {!masked && view.views.length > 0 && (
             <Note>
               Recently opened by: {view.views.map((v) => `${short(v.by)} ${when(v.at)}`).join(' · ')}
             </Note>

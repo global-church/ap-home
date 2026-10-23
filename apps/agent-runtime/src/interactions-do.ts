@@ -2017,7 +2017,9 @@ export class InteractionsDO {
           return cav?.terms ? decodeVaultRecordScopeTerms(cav.terms as Hex).map((g) => ({ resources: [...g.resources], ops: [...g.ops] })) : null;
         } catch { return null; }
       },
-      expectedDelegate: (this.env.DELIVERY_SERVICE_SA ?? '').toLowerCase(),
+      // The account the org's session leaf names in its audience (the interactions grant's delegate): the only one
+      // the vault will accept the DO acting through (spec 408). The directory grant must name it.
+      expectedDelegate: async () => String((((await this.state.storage.get('state')) ?? {}) as StoredState).grant?.delegate ?? '').toLowerCase(),
       getGrant: async () => (((await this.state.storage.get('state')) ?? {}) as StoredState).directoryGrant as unknown as DirectoryWire | undefined,
       setGrant: async (wire) => {
         const st = ((await this.state.storage.get('state')) ?? {}) as StoredState;

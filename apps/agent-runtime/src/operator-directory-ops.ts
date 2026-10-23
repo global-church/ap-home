@@ -26,8 +26,9 @@ export interface DirectoryCtx {
   grantSignatureOk(wire: Wire): Promise<boolean>;
   /** The record scope a grant carries: [{resources, ops}], or null when it carries none / is undecodable. */
   recordScopes(wire: Wire): { resources: string[]; ops: string[] }[] | null;
-  /** The delegate the directory grant must name (the DO's vault-writing service), or '' when unpinned. */
-  expectedDelegate: string;
+  /** The delegate the directory grant must name: the account this org's session leaf lets the DO act through (the
+   *  delegate of its interactions grant). '' when the org has none yet, which refuses enabling. */
+  expectedDelegate(): Promise<string>;
   getGrant(): Promise<Wire | undefined>;
   setGrant(wire: Wire): Promise<void>;
   read(grant: Wire, resource: string): Promise<unknown>;
@@ -123,7 +124,9 @@ export async function handleDirectoryOp(ctx: DirectoryCtx, op: string, body: Rec
   if (op === 'directory.enable') {
     const wire = body.delegation as Wire | undefined;
     if (!wire?.signature || wire.delegator.toLowerCase() !== ctx.principal) return no(400, 'a grant from the operator organization is required');
-    if (ctx.expectedDelegate && wire.delegate.toLowerCase() !== ctx.expectedDelegate) return no(403, 'the grant must name the directory service');
+    const expected = (await ctx.expectedDelegate()).toLowerCase();
+    if (!expected) return no(409, 'enable this organization’s storage first (it has no interactions grant)');
+    if (wire.delegate.toLowerCase() !== expected) return no(403, 'the grant must name the directory service');
     if (!directoryScopeExact(ctx.recordScopes(wire))) return no(403, 'the grant must cover exactly the directory records, read and write');
     if (!(await ctx.grantSignatureOk(wire))) return no(403, 'the grant does not verify against the operator organization');
     await ctx.setGrant(wire);

@@ -1,0 +1,105 @@
+// The operator directory's admin routes refuse everyone who is not an admin, and never carry a full address where a
+// masked one belongs (2026-10-23; gc-estate/docs/operator-workspace.md, "security evaluation").
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const A = (n: number) => `0x${String(n).padStart(40, '0')}`;
+const OPERATOR = A(900), RYAN = A(1), MALLORY = A(3), HOST = A(10), ORG = A(20);
+
+// The session is "tok:<address>"; anything else does not verify.
+vi.mock('@agenticprimitives/connect', async (orig) => ({
+  ...(await orig<object>()),
+  importJwks: async () => [],
+  verifyAgentSession: async (token: string) => (token.startsWith('tok:') ? { ok: true, session: { sub: `eip155:28190:${token.slice(4)}` } } : { ok: false, reason: 'bad' }),
+}));
+vi.mock('../_lib/server-broker', async (orig) => ({ ...(await orig<object>()), getServer: async () => ({ jwks: {} }), ownIssuer: () => 'https://gcid.test' }));
+// On-chain stewardship: only RYAN's grant from the operator org verifies, and only for RYAN.
+vi.mock('../_lib/verify-stewardship', () => ({
+  verifyStewardship: async (_env: unknown, org: string, person: string, wire: { delegator?: string; delegate?: string } | undefined) =>
+    org === OPERATOR && person === RYAN && wire?.delegator === OPERATOR && wire?.delegate === RYAN,
+}));
+
+import { onAdminDirectory, onAdminMe, onAdminOrganizations } from './admin';
+import { resetOperatorAdminCache } from '../_lib/operator-directory';
+
+function kv(entries: Record<string, unknown>) {
+  const m = new Map(Object.entries(entries).map(([k, v]) => [k, JSON.stringify(v)]));
+  return {
+    get: async (k: string) => m.get(k) ?? null,
+    put: async (k: string, v: string) => void m.set(k, v),
+    delete: async (k: string) => void m.delete(k),
+    list: async ({ prefix }: { prefix: string }) => ({ keys: [...m.keys()].filter((k) => k.startsWith(prefix)).map((name) => ({ name })), list_complete: true }),
+  };
+}
+
+const ryanLink = { stewardshipDelegation: { delegator: OPERATOR, delegate: RYAN, signature: '0xs', caveats: [] } };
+// MALLORY copies Ryan's grant into her own link: it names Ryan, so it must not make her an admin.
+const malloryLink = { stewardshipDelegation: { delegator: OPERATOR, delegate: RYAN, signature: '0xs', caveats: [] } };
+let doCalls: { url: string; body: Record<string, unknown> }[] = [];
+let env: never;
+
+beforeEach(() => {
+  resetOperatorAdminCache();
+  doCalls = [];
+  env = {
+    HOME_OPERATOR_ORG: OPERATOR,
+    A2A_CUSTODY_URL: 'https://runtime.test',
+    AUTH_CODES: kv({
+      [`related:${RYAN}:${OPERATOR}`]: ryanLink,
+      [`related:${MALLORY}:${OPERATOR}`]: malloryLink,
+      [`related:${HOST}:${ORG}`]: { orgName: 'grace.org', displayName: 'Grace Church', requestedBy: 'gather-app', kind: 'org', createdAt: 1 },
+    }),
+  } as never;
+  vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
+    const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+    doCalls.push({ url, body });
+    if (url.endsWith('/directory.masked')) return new Response(JSON.stringify({ ok: true, contacts: { [HOST]: { masked: 'pa•••r@g•••.org', verifiedAt: 5, source: 'email-sign-in' } } }));
+    return new Response(JSON.stringify({ ok: true, email: 'pastor@grace.org' }));
+  });
+});
+
+const req = (path: string, token: string | null, body?: unknown) =>
+  new Request(`https://gcid.test${path}`, { method: body ? 'POST' : 'GET', headers: token ? { authorization: `Bearer ${token}` } : {}, ...(body ? { body: JSON.stringify(body) } : {}) });
+
+describe('who is an admin', () => {
+  it('a steward of the operator org, verified on-chain; nobody else', async () => {
+    expect(await (await onAdminMe({ request: req('/connect/admin/me', `tok:${RYAN}`), env })).json()).toEqual({ admin: true, operatorOrg: OPERATOR });
+    expect(await (await onAdminMe({ request: req('/connect/admin/me', `tok:${MALLORY}`), env })).json()).toEqual({ admin: false });
+    expect(await (await onAdminMe({ request: req('/connect/admin/me', 'forged'), env })).json()).toEqual({ admin: false });
+  });
+});
+
+describe('the organizations list', () => {
+  it('refuses no session, a forged one, and a non-admin', async () => {
+    expect((await onAdminOrganizations({ request: req('/connect/admin/organizations', null), env })).status).toBe(401);
+    expect((await onAdminOrganizations({ request: req('/connect/admin/organizations', 'forged'), env })).status).toBe(401);
+    expect((await onAdminOrganizations({ request: req('/connect/admin/organizations', `tok:${MALLORY}`), env })).status).toBe(403);
+    expect(doCalls).toHaveLength(0);
+  });
+  it('for an admin, carries masked addresses only, and asks the directory with the admin’s own session and grant', async () => {
+    const r = await onAdminOrganizations({ request: req('/connect/admin/organizations', `tok:${RYAN}`), env });
+    const text = await r.text();
+    expect(r.status).toBe(200);
+    expect(text).toContain('pa•••r@g•••.org');
+    expect(text).not.toContain('pastor@grace.org');
+    expect(JSON.parse(text).masked).toBe(true);
+    expect(doCalls[0]!.body).toMatchObject({ session: `tok:${RYAN}`, stewardship: ryanLink.stewardshipDelegation });
+  });
+});
+
+describe('directory actions', () => {
+  it('refuse a non-admin before reaching the directory', async () => {
+    for (const action of ['reveal', 'export-request', 'export-approve', 'export-fetch', 'audit', 'import']) {
+      const r = await onAdminDirectory({ request: req('/connect/admin/directory', `tok:${MALLORY}`, { action, account: HOST, id: 'x' }), env });
+      expect(r.status, action).toBe(403);
+    }
+    expect(doCalls).toHaveLength(0);
+  });
+  it('an admin’s action carries their own session and grant, never one the caller supplied', async () => {
+    await onAdminDirectory({ request: req('/connect/admin/directory', `tok:${RYAN}`, { action: 'reveal', account: HOST, session: 'tok:someone-else', stewardship: { forged: true } }), env });
+    expect(doCalls[0]!.url).toBe(`https://runtime.test/interactions/${OPERATOR}/directory.reveal`);
+    expect(doCalls[0]!.body).toMatchObject({ session: `tok:${RYAN}`, stewardship: ryanLink.stewardshipDelegation, account: HOST });
+  });
+  it('an unknown action is refused', async () => {
+    expect((await onAdminDirectory({ request: req('/connect/admin/directory', `tok:${RYAN}`, { action: 'dump-everything' }), env })).status).toBe(400);
+  });
+});

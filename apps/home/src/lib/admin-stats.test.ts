@@ -120,12 +120,12 @@ describe('organizations by app (2026-10-22)', () => {
 
   it('lists the organizations the app created, with their type and managers; members are counted, not listed', () => {
     const rows = listAppOrganizations([
-      link(P(1), P(100), { orgName: 'Grace Church', requestedBy: 'gather-app', kind: 'org', createdAt: 10, orgType: CHURCH }),
+      link(P(1), P(100), { orgName: 'grace-church.org', displayName: 'Grace Church', requestedBy: 'gather-app', kind: 'org', createdAt: 10, orgType: CHURCH }),
       link(P(2), P(100), { orgName: 'Grace Church', requestedBy: 'home-invite', kind: 'org', relationship: 'member', createdAt: 20 }),
       link(P(3), P(100), { orgName: 'Grace Church', requestedBy: 'gather-app', kind: 'org', relationship: 'steward', createdAt: 30 }),
       link(P(4), P(200), { orgName: 'Not from Gather', requestedBy: 'other-app', kind: 'org', createdAt: 40 }),
     ], 'gather-app');
-    expect(rows).toEqual([{ org: P(100), name: 'Grace Church', createdAt: 10, type: CHURCH, stewards: [P(1), P(3)], members: 1, test: false }]);
+    expect(rows).toEqual([{ org: P(100), name: 'Grace Church', handle: 'grace-church.org', createdAt: 10, type: CHURCH, stewards: [P(1), P(3)], members: 1, test: false }]);
   });
 
   it('includes an organization a Gather workspace is governed by, and keeps an Other answer in the person’s words', () => {
