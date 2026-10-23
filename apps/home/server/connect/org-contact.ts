@@ -126,9 +126,8 @@ export const onVerify = async ({ request, env }: FnContext): Promise<Response> =
   await env.AUTH_CODES.delete(key);
   const verifiedAt = Date.now();
   if (operatorOrg(env)) {
-    // The operator directory (2026-10-23): written with the steward's own session; the DO re-checks their stewardship.
-    const auth = request.headers.get('authorization') ?? '';
-    const r = await recordOrgVerified(env, auth.startsWith('Bearer ') ? auth.slice(7) : '', g.person, g.org, email);
+    // The operator directory (2026-10-23): GCID vouches for the address it just checked; the DO re-checks stewardship.
+    const r = await recordOrgVerified(env, request, g.person, g.org, email);
     if (!r.ok) return json({ error: 'The address was confirmed, but saving it to GCID’s directory failed. Try again.' }, 502);
   } else {
     await recordContactEmail(env, g.org, email, `org-verified:${g.person}`, verifiedAt);

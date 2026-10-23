@@ -80,5 +80,13 @@ describe('audit log', () => {
     expect(log[0]!.by).toBe(RYAN);
     for (let i = 0; i < 1200; i++) log = appendAudit(log, { at: i, by: PAUL, kind: 'list' });
     expect(log.length).toBe(1000);
+    // Security review #3: opening the list over and over does not push the reveal out.
+    expect(log[0]).toMatchObject({ kind: 'reveal', by: RYAN });
+  });
+  it('when the log is all reveals and exports, the oldest of those goes', () => {
+    let log = appendAudit(null, { at: 0, by: RYAN, kind: 'reveal', account: A(10) });
+    for (let i = 1; i <= 1000; i++) log = appendAudit(log, { at: i, by: PAUL, kind: 'reveal', account: A(11) });
+    expect(log.length).toBe(1000);
+    expect(log[0]!.at).toBe(1);
   });
 });

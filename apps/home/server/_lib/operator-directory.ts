@@ -43,22 +43,28 @@ export async function directoryOp(env: Env, op: string, body: Record<string, unk
  * Record the address a person just proved with a code. A two-minute session names that address's hash, so the
  * directory accepts this address and no other, for this account and no other. Never throws, never fails a sign-in.
  */
+/** A two-minute session for `agent` whose sign-in subject is this email's hash: GCID's statement that the address was
+ *  just verified with a code. The DO accepts an address only with such a session. It never leaves the server. */
+async function emailSessionFor(env: Env, request: Request, agent: string, clean: string): Promise<string> {
+  const { signer } = await getServer(env);
+  return mintAgentSession(
+    {
+      sub: agent.toLowerCase() as Parameters<typeof mintAgentSession>[0]['sub'],
+      principal: { kind: 'email', id: await emailHash(clean), assurance: 'asserted', role: 'login-grade' },
+      assurance: 'asserted',
+      aud: env.DEMO_SSO_AUD ?? 'demo-sso',
+      iss: resolveOrigin(request, env),
+      ttlSeconds: 120,
+    },
+    signer,
+  );
+}
+
 export async function recordVerifiedEmail(env: Env, request: Request, agent: string, email: string): Promise<void> {
   try {
     if (!operatorOrg(env)) return;
     const clean = email.trim().toLowerCase();
-    const { signer } = await getServer(env);
-    const token = await mintAgentSession(
-      {
-        sub: agent as Parameters<typeof mintAgentSession>[0]['sub'],
-        principal: { kind: 'email', id: await emailHash(clean), assurance: 'asserted', role: 'login-grade' },
-        assurance: 'asserted',
-        aud: env.DEMO_SSO_AUD ?? 'demo-sso',
-        iss: resolveOrigin(request, env),
-        ttlSeconds: 120,
-      },
-      signer,
-    );
+    const token = await emailSessionFor(env, request, agent, clean);
     const r = await directoryOp(env, 'directory.record', { session: token, email: clean });
     if (r.status !== 200) console.warn('[operator-directory] email not recorded', { status: r.status, error: r.body.error });
   } catch (e) {
@@ -124,9 +130,12 @@ export async function recordOrgDefault(env: Env, request: Request, person: strin
   }
 }
 
-/** An organization's contact, changed after GCID checked the code sent to it. `session` is the steward's own. */
-export async function recordOrgVerified(env: Env, session: string, person: string, org: string, email: string): Promise<{ ok: boolean; error?: string }> {
+/** An organization's contact, changed after GCID checked the code sent to it. The session proves that address (only
+ *  GCID can mint it); the DO also re-checks the person's stewardship of the org. */
+export async function recordOrgVerified(env: Env, request: Request, person: string, org: string, email: string): Promise<{ ok: boolean; error?: string }> {
   const stewardship = await stewardshipFor(env.AUTH_CODES, person, org);
-  const r = await directoryOp(env, 'directory.recordOrg', { session, org, stewardship, email });
+  const clean = email.trim().toLowerCase();
+  const session = await emailSessionFor(env, request, person, clean);
+  const r = await directoryOp(env, 'directory.recordOrg', { session, org, stewardship, email: clean });
   return r.status === 200 ? { ok: true } : { ok: false, error: String(r.body.error ?? `the directory answered ${r.status}`) };
 }

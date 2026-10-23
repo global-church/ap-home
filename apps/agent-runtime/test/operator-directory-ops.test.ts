@@ -14,7 +14,9 @@ function harness() {
   let grant: Wire | undefined;
   let t = 1_000_000;
   let n = 0;
-  const stewards: Record<string, string[]> = { [OPERATOR]: [RYAN, PAUL], [CHURCH]: [HOST] };
+  // HOST also "stewards" its own account: a self-signed grant, which the DO must not treat as an organization.
+  const stewards: Record<string, string[]> = { [OPERATOR]: [RYAN, PAUL], [CHURCH]: [HOST], [HOST]: [HOST] };
+  let duringRead: (() => Promise<void>) | null = null;
   const ctx: DirectoryCtx = {
     principal: OPERATOR,
     now: () => t,
@@ -31,11 +33,11 @@ function harness() {
     async getGrant() { return grant; },
     async setGrant(w) { grant = w; },
     async read(_g, r) { return vault.get(r) ?? null; },
-    async readMany(_g, rs) { return Object.fromEntries(rs.map((r) => [r, vault.get(r) ?? null])); },
+    async readMany(_g, rs) { const hook = duringRead; duringRead = null; if (hook) await hook(); return Object.fromEntries(rs.map((r) => [r, vault.get(r) ?? null])); },
     async write(_g, r, d) { vault.set(r, d); },
     serial: (_k, w) => w(),
   };
-  return { ctx, vault, enable: () => { grant = DIRECTORY_GRANT; }, tick: (ms: number) => { t += ms; } };
+  return { ctx, vault, enable: () => { grant = DIRECTORY_GRANT; }, tick: (ms: number) => { t += ms; }, whileReading: (fn: () => Promise<void>) => { duringRead = fn; } };
 }
 
 const as = (sa: string, email = '-', org = OPERATOR) => ({ session: `session:${sa}:${email}`, stewardship: wire(org, sa) });
@@ -64,12 +66,24 @@ describe('an organization’s contact', () => {
     const r = await call(h, 'directory.defaultOrg', { ...as(HOST, 'pastor@grace.org', CHURCH), org: CHURCH });
     expect(r.body).toMatchObject({ ok: true, recorded: true });
     expect(h.vault.get(`contact:${CHURCH}`)).toMatchObject({ email: 'pastor@grace.org', source: `org-default:${HOST}` });
-    await call(h, 'directory.recordOrg', { ...as(HOST, '-', CHURCH), org: CHURCH, email: 'office@grace.org' });
+    await call(h, 'directory.recordOrg', { ...as(HOST, 'office@grace.org', CHURCH), org: CHURCH, email: 'office@grace.org' });
     expect((await call(h, 'directory.defaultOrg', { ...as(HOST, '-', CHURCH), org: CHURCH })).body).toMatchObject({ recorded: false });
     expect(h.vault.get(`contact:${CHURCH}`)).toMatchObject({ email: 'office@grace.org' });
   });
   it('only someone who manages the org may set it', async () => {
-    expect((await call(h, 'directory.recordOrg', { ...as(MALLORY, '-', CHURCH), org: CHURCH, email: 'evil@x.org' })).status).toBe(403);
+    expect((await call(h, 'directory.recordOrg', { ...as(MALLORY, 'evil@x.org', CHURCH), org: CHURCH, email: 'evil@x.org' })).status).toBe(403);
+  });
+  it('a manager cannot set an address that was not verified with a code (security review #5)', async () => {
+    // HOST's own session (signed in as pastor@) calling directly with another address: refused.
+    expect((await call(h, 'directory.recordOrg', { ...as(HOST, 'pastor@grace.org', CHURCH), org: CHURCH, email: 'anything@else.org' })).status).toBe(403);
+    expect((await call(h, 'directory.recordOrg', { ...as(HOST, '-', CHURCH), org: CHURCH, email: 'anything@else.org' })).status).toBe(403);
+    expect(h.vault.has(`contact:${CHURCH}`)).toBe(false);
+  });
+  it('an account is not its own organization, even with a self-signed grant (security review #5)', async () => {
+    for (const op of ['directory.recordOrg', 'directory.defaultOrg']) {
+      expect((await call(h, op, { ...as(HOST, 'fake@x.org', HOST), org: HOST, email: 'fake@x.org' })).status, op).toBe(400);
+    }
+    expect(h.vault.has(`contact:${HOST}`)).toBe(false);
   });
 });
 
@@ -125,6 +139,14 @@ describe('two-admin export, end to end', () => {
     await call(h, 'export.approve', { ...as(PAUL), id: id2 });
     h.tick(31 * 60 * 1000);
     expect((await call(h, 'export.fetch', { ...as(RYAN), id: id2 })).body.error).toBe('this export is expired');
+  });
+  it('a deny that lands while the rows are being read still stops the download (security review #6)', async () => {
+    const id = ((await call(h, 'export.request', { ...as(RYAN), app: 'gather-app', accounts: [HOST] })).body.request as { id: string }).id;
+    await call(h, 'export.approve', { ...as(PAUL), id });
+    h.whileReading(async () => { await call(h, 'export.deny', { ...as(PAUL), id }); });
+    const got = await call(h, 'export.fetch', { ...as(RYAN), id });
+    expect(got.status).toBe(403);
+    expect(JSON.stringify(got.body)).not.toContain('pastor@grace.org');
   });
   it('the request list never carries the accounts', async () => {
     await call(h, 'export.request', { ...as(RYAN), app: 'gather-app', accounts: [HOST] });

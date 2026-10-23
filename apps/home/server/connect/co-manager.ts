@@ -68,6 +68,9 @@ export const onCoManagerGet = async ({ request, env }: FnContext): Promise<Respo
     const out = await Promise.all(offers.map(async ({ delegation: _d, ...o }) => ({
       ...o,
       custodianAdded: o.custodian ? await isCustodian(env, org, o.custodian) : false,
+      // Still controls the person's account NOW (security review 2026-10-23): a custodian they rotated away from is never
+      // offered to the org.
+      custodianValid: o.custodian ? await isCustodian(env, o.person, o.custodian) : false,
     })));
     return json({ ok: true, offers: out });
   }

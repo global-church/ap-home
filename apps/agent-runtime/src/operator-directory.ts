@@ -76,8 +76,15 @@ export async function sessionProvesEmail(principal: { kind: string; id: string }
 export type AuditKind = 'list' | 'reveal' | 'export-request' | 'export-approve' | 'export-fetch' | 'export-deny' | 'import' | 'enable';
 export interface AuditEntry { at: number; by: string; kind: AuditKind; accounts?: number; account?: string; exportId?: string; note?: string }
 
+/** Bounded, but list views are dropped first (security review 2026-10-23, #3): opening the masked list again and
+ *  again must not push a reveal or an export out of the log. Only when the log is all reveals/exports does the
+ *  oldest of those go. */
 export function appendAudit(log: AuditEntry[] | null | undefined, entry: AuditEntry): AuditEntry[] {
-  return [...(Array.isArray(log) ? log : []), { ...entry, by: entry.by.toLowerCase() }].slice(-AUDIT_KEPT);
+  const all = [...(Array.isArray(log) ? log : []), { ...entry, by: entry.by.toLowerCase() }];
+  let over = all.length - AUDIT_KEPT;
+  if (over <= 0) return all;
+  const kept = all.filter((e) => (e.kind === 'list' && over > 0 ? (over--, false) : true));
+  return kept.slice(-AUDIT_KEPT);
 }
 
 // ── Exports: request -> a DIFFERENT admin approves -> the requester downloads once ──────────────────────────────

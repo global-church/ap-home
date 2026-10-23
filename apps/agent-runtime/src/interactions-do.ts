@@ -1996,8 +1996,6 @@ export class InteractionsDO {
 
   /** What operator-directory-ops.ts needs from this object: identity, on-chain checks, and the vault. */
   private directoryCtx(principal: string): DirectoryCtx {
-    const toDelegation = (wire: DirectoryWire): Delegation =>
-      ({ ...wire, salt: BigInt(wire.salt as string), caveats: wire.caveats.map((c) => ({ enforcer: c.enforcer, terms: c.terms, args: (c.args ?? '0x') as Hex })) }) as unknown as Delegation;
     return {
       principal,
       now: () => Date.now(),
@@ -2007,10 +2005,8 @@ export class InteractionsDO {
         return v.ok ? { ok: true, sa: v.sa, ...(v.principal ? { principal: v.principal } : {}) } : { ok: false, error: v.error };
       },
       isSteward: (org, sa, wire) => this.isSteward(org, sa as Address, wire as unknown as IncomingDelegation | undefined),
-      grantSignatureOk: async (wire) => {
-        const digest = hashDelegation(toDelegation(wire), Number(this.env.CHAIN_ID ?? 84532), this.env.DELEGATION_MANAGER as Address);
-        return this.erc1271(wire.delegator as Address, digest, wire.signature as Hex);
-      },
+      // Signature, time window AND not revoked (security review 2026-10-23, #8): an old or revoked grant cannot be put back.
+      grantSignatureOk: async (wire) => this.verifyWire(wire as unknown as IncomingDelegation, wire.delegator, wire.delegate as Address),
       recordScopes: (wire) => {
         try {
           const cav = (wire.caveats ?? []).find((c) => (c.enforcer ?? '').toLowerCase() === VAULT_RECORD_SCOPE_ENFORCER.toLowerCase());
@@ -2020,7 +2016,12 @@ export class InteractionsDO {
       // The account the org's session leaf names in its audience (the interactions grant's delegate): the only one
       // the vault will accept the DO acting through (spec 408). The directory grant must name it.
       expectedDelegate: async () => String((((await this.state.storage.get('state')) ?? {}) as StoredState).grant?.delegate ?? '').toLowerCase(),
-      getGrant: async () => (((await this.state.storage.get('state')) ?? {}) as StoredState).directoryGrant as unknown as DirectoryWire | undefined,
+      // An expired directory grant reads as "not enabled" (#2): the grant is short-lived, and Admin then offers Enable
+      // again so an admin re-signs it.
+      getGrant: async () => {
+        const g = (((await this.state.storage.get('state')) ?? {}) as StoredState).directoryGrant;
+        return g && this.leafWindowLive(g) !== false ? (g as unknown as DirectoryWire) : undefined;
+      },
       setGrant: async (wire) => {
         const st = ((await this.state.storage.get('state')) ?? {}) as StoredState;
         st.directoryGrant = wire as unknown as IncomingDelegation;

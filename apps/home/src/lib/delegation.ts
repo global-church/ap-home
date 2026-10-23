@@ -326,7 +326,9 @@ export async function issueOperatorDirectoryDelegation(
   directoryServiceSA: Address,
   mcpServerId: string,
   signHash: SignHash,
-  validitySeconds = 60 * 60 * 24 * 365,
+  // 30 days (security review 2026-10-23, #2): the grant reads the whole directory, so a copied one must go stale soon.
+  // When it lapses the directory reads as "not enabled" and Admin offers Enable again.
+  validitySeconds = 60 * 60 * 24 * 30,
 ): Promise<Delegation> {
   const validUntil = Math.floor(Date.now() / 1000) + validitySeconds;
   const bytes = crypto.getRandomValues(new Uint8Array(16));

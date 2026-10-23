@@ -98,12 +98,18 @@ export async function handleDirectoryOp(ctx: DirectoryCtx, op: string, body: Rec
   if (op === 'directory.defaultOrg' || op === 'directory.recordOrg') {
     const org = String(body.org ?? '').toLowerCase();
     if (!isAccount(org)) return no(400, 'org must be an organization address');
+    // Security review 2026-10-23 (#5): a self-signed "stewardship" of your own account would otherwise let you write
+    // your own record with an address you never verified.
+    if (org === sa) return no(400, 'an account is not its own organization');
     if (!(await ctx.isSteward(org, sa, body.stewardship as Wire | undefined))) return no(403, 'only someone who manages this organization can set its contact');
     const grant = await ctx.getGrant();
     if (!grant) return no(409, 'the operator directory is not enabled');
     if (op === 'directory.recordOrg') {
       const email = cleanEmail(body.email);
       if (!email) return no(400, 'a valid email is required');
+      // The session must prove the address (#5): GCID mints one only after the code sent to it was entered, so a
+      // steward calling here directly cannot skip the code.
+      if (!(await sessionProvesEmail(who.principal, email))) return no(403, 'this address has not been verified with a code');
       await ctx.write(grant, contactKey(org), { v: 2, email, verifiedAt: ctx.now(), source: `org-verified:${sa}` } satisfies ContactRecord);
       return ok();
     }
@@ -221,11 +227,12 @@ export async function handleDirectoryOp(ctx: DirectoryCtx, op: string, body: Rec
     await ctx.serial(EXPORTS_DOC, async () => {
       const list = keepExports((await ctx.read(grant, EXPORTS_DOC)) as ExportRequest[] | null);
       const i = list.findIndex((x) => x.id === r.id);
-      if (i < 0 || list[i]!.fetchedAt) { raced = true; return; }
+      // Re-checked here (#6): a deny or the window closing while the rows were read still stops the download.
+      if (i < 0 || !canFetch(list[i]!, sa, ctx.now()).ok) { raced = true; return; }
       list[i] = { ...list[i]!, fetchedAt: ctx.now() };
       await ctx.write(grant, EXPORTS_DOC, list);
     });
-    if (raced) return no(403, 'this export is downloaded');
+    if (raced) return no(403, 'this export is no longer available to download');
     await audit(ctx, grant, { by: sa, kind: 'export-fetch', exportId: r.id, accounts: found.size });
     const rows = r.accounts.map((a) => ({ account: a, email: found.get(a)?.email ?? null, verifiedAt: found.get(a)?.verifiedAt ?? null }));
     return ok({ app: r.app, approvedBy: r.approvedBy, rows });

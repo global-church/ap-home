@@ -18,7 +18,7 @@ const ADD_CUSTODIAN_ABI = [
   { type: 'function', name: 'addCustodian', stateMutability: 'nonpayable', inputs: [{ name: 'owner', type: 'address' }], outputs: [] },
 ] as const;
 
-interface OfferRow { org: string; person: string; orgName: string; offeredBy: string; offeredAt: number; acceptedAt?: number; custodian?: string; custodianAdded?: boolean }
+interface OfferRow { org: string; person: string; orgName: string; offeredBy: string; offeredAt: number; acceptedAt?: number; custodian?: string; custodianAdded?: boolean; custodianValid?: boolean }
 
 async function asOrg(session: Session, org: string) {
   const profile = await fetchProfile(session.token);
@@ -94,7 +94,7 @@ export function CoManagers({ org, session }: { org: string; session: Session }) 
             <li key={o.person} style={{ padding: '.4rem 0', borderTop: '1px solid var(--color-border)' }}>
               <Mono title={o.person}>{short(o.person)}</Mono>{' '}
               <Meta>{!o.acceptedAt ? 'offered, not yet accepted' : o.custodianAdded ? 'co-manager and co-custodian' : 'co-manager'}</Meta>
-              {o.acceptedAt && o.custodian && !o.custodianAdded && (
+              {o.acceptedAt && o.custodian && o.custodianValid && !o.custodianAdded && (
                 <> <Button size="sm" onClick={() => void addCustodian(o)} disabled={busy} data-testid="co-manager-add-custodian">Add as co-custodian</Button></>
               )}
             </li>
