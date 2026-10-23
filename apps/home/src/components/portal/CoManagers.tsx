@@ -32,10 +32,12 @@ export function CoManagers({ org, session }: { org: string; session: Session }) 
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
+  const [manager, setManager] = useState(true);
 
   const load = useCallback(async () => {
     const r = await fetch(`/connect/co-manager?org=${org.toLowerCase()}`, { headers: { authorization: `Bearer ${session.token}` } }).catch(() => null);
     const j = (await r?.json().catch(() => null)) as { offers?: OfferRow[] } | null;
+    if (r?.status === 403) setManager(false);
     if (r?.ok) setOffers(j?.offers ?? []);
   }, [org, session.token]);
   useEffect(() => { void load(); }, [load]);
@@ -71,6 +73,7 @@ export function CoManagers({ org, session }: { org: string; session: Session }) 
     await load();
   });
 
+  if (!manager) return null;
   return (
     <Section title="Co-managers" testId="org-co-managers">
       <div style={{ display: 'flex', gap: '.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
