@@ -183,7 +183,7 @@ export async function deriveSubjectCustodian(
 export async function verifyHomeSession(
   token: string,
   env: { BROKER_JWKS_URL?: string; BROKER_ISS?: string; DEMO_SSO_AUD?: string },
-): Promise<{ ok: true; sa: Address; caip: string } | { ok: false; status: number; error: string }> {
+): Promise<{ ok: true; sa: Address; caip: string; principal?: { kind: string; id: string } } | { ok: false; status: number; error: string }> {
   if (!env.BROKER_JWKS_URL || !env.BROKER_ISS || !env.DEMO_SSO_AUD) return { ok: false, status: 503, error: 'broker gate not configured' };
   if (!token) return { ok: false, status: 401, error: 'missing session' };
   let keys: VerifyKey[];
@@ -214,7 +214,12 @@ export async function verifyHomeSession(
   if (!v.ok) return { ok: false, status: 401, error: `invalid session: ${v.reason}` };
   const sa = v.session.sub.match(/0x[0-9a-fA-F]{40}$/)?.[0] as Address | undefined;
   if (!sa) return { ok: false, status: 400, error: 'no SA in session sub' };
-  return { ok: true, sa, caip: v.session.sub };
+  // The sign-in identity behind the session (e.g. `{kind:'oidc', id:'email#<sha256>'}` for an email sign-in), for an
+  // op that must bind a record to what the person proved: the operator directory records only the address whose hash
+  // the session carries (operator-directory.ts, 2026-10-23).
+  const p = (v.session as { principal?: { kind?: unknown; id?: unknown } }).principal;
+  const principal = p && typeof p.kind === 'string' && typeof p.id === 'string' ? { kind: p.kind, id: p.id } : undefined;
+  return { ok: true, sa, caip: v.session.sub, ...(principal ? { principal } : {}) };
 }
 
 /** Verify a REGISTERED relying app's OIDC id_token (e.g. the uupg tracker driving the org's discussion

@@ -1,0 +1,228 @@
+// The operator directory's operations, run by the OPERATOR ORG's InteractionsDO (design: gc-estate/docs/
+// operator-workspace.md; policy: operator-directory.ts). Everything the DO provides arrives through `DirectoryCtx`,
+// so every admission and refusal here is tested without a Durable Object (test/operator-directory-ops.test.ts).
+//
+// Admission, per op (none is a bearer credential):
+//   directory.record                 the person's own session, which must PROVE the email (sign-in hash)
+//   directory.defaultOrg / recordOrg  a session + that ORG's stewardship grant (on-chain, unrevoked)
+//   everything else                  a session + THIS operator org's stewardship grant (an admin)
+import {
+  appendAudit, AUDIT_LOG, canApprove, canDeny, canFetch, cleanEmail, contactKey, DIRECTORY_SCOPE, EXPORTS_DOC,
+  exportSummary, isAccount, keepExports, maskEmail, newExportRequest, readContact, sessionProvesEmail,
+  type AuditEntry, type ContactRecord, type ExportRequest,
+} from './operator-directory.js';
+
+export interface Wire { delegator: string; delegate: string; signature?: string; caveats: { enforcer: string; terms: string; args?: string }[]; salt: string | number | bigint; authority?: string }
+
+export interface DirectoryCtx {
+  /** The operator org (this DO's principal), lower-case. */
+  principal: string;
+  now(): number;
+  newId(): string;
+  verifySession(session: string): Promise<{ ok: true; sa: string; principal?: { kind: string; id: string } } | { ok: false; error: string }>;
+  /** Stewardship of `org` held by `sa`: shape + ERC-1271 + window + not revoked. */
+  isSteward(org: string, sa: string, wire: Wire | undefined): Promise<boolean>;
+  /** The grant verifies (ERC-1271) against its delegator. */
+  grantSignatureOk(wire: Wire): Promise<boolean>;
+  /** The record scope a grant carries: [{resources, ops}], or null when it carries none / is undecodable. */
+  recordScopes(wire: Wire): { resources: string[]; ops: string[] }[] | null;
+  /** The delegate the directory grant must name (the DO's vault-writing service), or '' when unpinned. */
+  expectedDelegate: string;
+  getGrant(): Promise<Wire | undefined>;
+  setGrant(wire: Wire): Promise<void>;
+  read(grant: Wire, resource: string): Promise<unknown>;
+  readMany(grant: Wire, resources: string[]): Promise<Record<string, unknown>>;
+  write(grant: Wire, resource: string, data: unknown): Promise<void>;
+  /** Run read-modify-write work on a shared record one at a time. */
+  serial<T>(key: string, work: () => Promise<T>): Promise<T>;
+}
+
+type Out = { status: number; body: Record<string, unknown> };
+const ok = (body: Record<string, unknown> = {}): Out => ({ status: 200, body: { ok: true, ...body } });
+const no = (status: number, error: string): Out => ({ status, body: { ok: false, error } });
+
+export const DIRECTORY_OPS = new Set([
+  'directory.enable', 'directory.record', 'directory.defaultOrg', 'directory.recordOrg', 'directory.masked',
+  'directory.reveal', 'directory.audit', 'directory.import', 'export.request', 'export.list', 'export.approve',
+  'export.deny', 'export.fetch',
+]);
+
+/** The directory grant's scope must be exactly the directory's records, read+write, nothing else. */
+export function directoryScopeExact(scopes: { resources: string[]; ops: string[] }[] | null): boolean {
+  if (!scopes || !scopes.length) return false;
+  const resources = new Set(scopes.flatMap((s) => s.resources));
+  if (resources.size !== DIRECTORY_SCOPE.length || !DIRECTORY_SCOPE.every((r) => resources.has(r))) return false;
+  return DIRECTORY_SCOPE.every((r) => {
+    const ops = new Set(scopes.filter((s) => s.resources.includes(r)).flatMap((s) => s.ops));
+    return ops.has('read') && ops.has('write');
+  });
+}
+
+async function chunkedRead(ctx: DirectoryCtx, grant: Wire, accounts: string[]): Promise<Map<string, ContactRecord>> {
+  const out = new Map<string, ContactRecord>();
+  for (let i = 0; i < accounts.length; i += 50) {
+    const slice = accounts.slice(i, i + 50);
+    const got = await ctx.readMany(grant, slice.map(contactKey));
+    for (const a of slice) {
+      const c = readContact(got[contactKey(a)]);
+      if (c) out.set(a, c);
+    }
+  }
+  return out;
+}
+
+async function audit(ctx: DirectoryCtx, grant: Wire, entry: Omit<AuditEntry, 'at'>): Promise<void> {
+  await ctx.serial(AUDIT_LOG, async () => {
+    const log = (await ctx.read(grant, AUDIT_LOG)) as AuditEntry[] | null;
+    await ctx.write(grant, AUDIT_LOG, appendAudit(log, { ...entry, at: ctx.now() }));
+  });
+}
+
+export async function handleDirectoryOp(ctx: DirectoryCtx, op: string, body: Record<string, unknown>): Promise<Out> {
+  const session = String(body.session ?? '');
+  const who = await ctx.verifySession(session);
+  if (!who.ok) return no(401, who.error);
+  const sa = who.sa.toLowerCase();
+
+  // ── Writes that come from the person or org the record is about ──
+  if (op === 'directory.record') {
+    const email = cleanEmail(body.email);
+    if (!email) return no(400, 'a valid email is required');
+    if (!(await sessionProvesEmail(who.principal, email))) return no(403, 'this session did not sign in with that email');
+    const grant = await ctx.getGrant();
+    if (!grant) return no(409, 'the operator directory is not enabled');
+    await ctx.write(grant, contactKey(sa), { v: 2, email, verifiedAt: ctx.now(), source: 'email-sign-in' } satisfies ContactRecord);
+    return ok();
+  }
+  if (op === 'directory.defaultOrg' || op === 'directory.recordOrg') {
+    const org = String(body.org ?? '').toLowerCase();
+    if (!isAccount(org)) return no(400, 'org must be an organization address');
+    if (!(await ctx.isSteward(org, sa, body.stewardship as Wire | undefined))) return no(403, 'only someone who manages this organization can set its contact');
+    const grant = await ctx.getGrant();
+    if (!grant) return no(409, 'the operator directory is not enabled');
+    if (op === 'directory.recordOrg') {
+      const email = cleanEmail(body.email);
+      if (!email) return no(400, 'a valid email is required');
+      await ctx.write(grant, contactKey(org), { v: 2, email, verifiedAt: ctx.now(), source: `org-verified:${sa}` } satisfies ContactRecord);
+      return ok();
+    }
+    // The creator's own verified address, copied; never supplied by the caller, never over an existing contact.
+    const [existing, mine] = await Promise.all([ctx.read(grant, contactKey(org)), ctx.read(grant, contactKey(sa))]);
+    if (readContact(existing)) return ok({ recorded: false, reason: 'the organization already has a contact' });
+    const me = readContact(mine);
+    if (!me) return ok({ recorded: false, reason: 'no verified email on file for you yet' });
+    await ctx.write(grant, contactKey(org), { v: 2, email: me.email, verifiedAt: ctx.now(), source: `org-default:${sa}` } satisfies ContactRecord);
+    return ok({ recorded: true });
+  }
+
+  // ── Everything else: an admin of THIS operator org ──
+  if (!(await ctx.isSteward(ctx.principal, sa, body.stewardship as Wire | undefined))) {
+    return no(403, 'only an admin (someone the operator organization granted stewardship) may do this');
+  }
+
+  if (op === 'directory.enable') {
+    const wire = body.delegation as Wire | undefined;
+    if (!wire?.signature || wire.delegator.toLowerCase() !== ctx.principal) return no(400, 'a grant from the operator organization is required');
+    if (ctx.expectedDelegate && wire.delegate.toLowerCase() !== ctx.expectedDelegate) return no(403, 'the grant must name the directory service');
+    if (!directoryScopeExact(ctx.recordScopes(wire))) return no(403, 'the grant must cover exactly the directory records, read and write');
+    if (!(await ctx.grantSignatureOk(wire))) return no(403, 'the grant does not verify against the operator organization');
+    await ctx.setGrant(wire);
+    await audit(ctx, wire, { by: sa, kind: 'enable' });
+    return ok();
+  }
+
+  const grant = await ctx.getGrant();
+  if (!grant) return no(409, 'the operator directory is not enabled');
+
+  if (op === 'directory.masked') {
+    const accounts = Array.isArray(body.accounts) ? [...new Set(body.accounts.filter(isAccount).map((a) => a.toLowerCase()))].slice(0, 5000) : [];
+    const found = await chunkedRead(ctx, grant, accounts);
+    await audit(ctx, grant, { by: sa, kind: 'list', accounts: found.size });
+    const contacts: Record<string, { masked: string; verifiedAt: number; source: string }> = {};
+    for (const [a, c] of found) contacts[a] = { masked: maskEmail(c.email), verifiedAt: c.verifiedAt, source: c.source.split(':')[0] ?? '' };
+    return ok({ contacts });
+  }
+  if (op === 'directory.reveal') {
+    const account = String(body.account ?? '').toLowerCase();
+    if (!isAccount(account)) return no(400, 'account required');
+    const c = readContact(await ctx.read(grant, contactKey(account)));
+    // Recorded BEFORE the address is returned: a reveal that is not in the log does not happen.
+    await audit(ctx, grant, { by: sa, kind: 'reveal', account });
+    return ok({ email: c?.email ?? null, verifiedAt: c?.verifiedAt ?? null });
+  }
+  if (op === 'directory.audit') {
+    const log = ((await ctx.read(grant, AUDIT_LOG)) as AuditEntry[] | null) ?? [];
+    return ok({ entries: [...log].reverse().slice(0, Math.min(Number(body.limit ?? 50) || 50, 500)) });
+  }
+  if (op === 'directory.import') {
+    const rows = Array.isArray(body.records) ? (body.records as { account?: unknown; email?: unknown; verifiedAt?: unknown; source?: unknown }[]) : [];
+    let n = 0;
+    for (const r of rows.slice(0, 5000)) {
+      const account = String(r.account ?? '').toLowerCase();
+      const email = cleanEmail(r.email);
+      if (!isAccount(account) || !email) continue;
+      if (readContact(await ctx.read(grant, contactKey(account)))) continue; // a live record is newer than the old copy
+      const at = typeof r.verifiedAt === 'number' ? r.verifiedAt : ctx.now();
+      await ctx.write(grant, contactKey(account), { v: 2, email, verifiedAt: at, source: `import:${String(r.source ?? 'kv').slice(0, 60)}` } satisfies ContactRecord);
+      n++;
+    }
+    await audit(ctx, grant, { by: sa, kind: 'import', accounts: n });
+    return ok({ imported: n });
+  }
+
+  // ── Exports ──
+  if (op === 'export.list') {
+    const list = keepExports((await ctx.read(grant, EXPORTS_DOC)) as ExportRequest[] | null);
+    const now = ctx.now();
+    return ok({ requests: [...list].reverse().map((r) => exportSummary(r, now)) });
+  }
+  if (op === 'export.request') {
+    const req = newExportRequest({ id: ctx.newId(), app: String(body.app ?? ''), accounts: body.accounts, requestedBy: sa, now: ctx.now(), note: body.note });
+    if ('error' in req) return no(400, req.error);
+    await ctx.serial(EXPORTS_DOC, async () => {
+      const list = keepExports((await ctx.read(grant, EXPORTS_DOC)) as ExportRequest[] | null);
+      await ctx.write(grant, EXPORTS_DOC, keepExports([...list, req]));
+    });
+    await audit(ctx, grant, { by: sa, kind: 'export-request', exportId: req.id, accounts: req.accounts.length });
+    return ok({ request: exportSummary(req, ctx.now()) });
+  }
+  if (op === 'export.approve' || op === 'export.deny' || op === 'export.fetch') {
+    const id = String(body.id ?? '');
+    let refused: string | null = null;
+    let target: ExportRequest | null = null;
+    await ctx.serial(EXPORTS_DOC, async () => {
+      const list = keepExports((await ctx.read(grant, EXPORTS_DOC)) as ExportRequest[] | null);
+      const i = list.findIndex((r) => r.id === id);
+      if (i < 0) { refused = 'no such export'; return; }
+      const r = list[i]!;
+      const now = ctx.now();
+      const v = op === 'export.approve' ? canApprove(r, sa, now) : op === 'export.deny' ? canDeny(r, now) : canFetch(r, sa, now);
+      if (!v.ok) { refused = v.reason; return; }
+      if (op === 'export.fetch') { target = r; return; } // marked downloaded only after the data is read and the fetch recorded
+      list[i] = op === 'export.approve' ? { ...r, approvedBy: sa, approvedAt: now } : { ...r, deniedBy: sa, deniedAt: now };
+      target = list[i]!;
+      await ctx.write(grant, EXPORTS_DOC, list);
+    });
+    if (refused) return no(403, refused);
+    const r = target as unknown as ExportRequest;
+    if (op !== 'export.fetch') {
+      await audit(ctx, grant, { by: sa, kind: op === 'export.approve' ? 'export-approve' : 'export-deny', exportId: r.id, accounts: r.accounts.length });
+      return ok({ request: exportSummary(r, ctx.now()) });
+    }
+    const found = await chunkedRead(ctx, grant, r.accounts);
+    // Mark it downloaded and record it BEFORE any address is returned; if either write fails, nothing leaves.
+    let raced = false;
+    await ctx.serial(EXPORTS_DOC, async () => {
+      const list = keepExports((await ctx.read(grant, EXPORTS_DOC)) as ExportRequest[] | null);
+      const i = list.findIndex((x) => x.id === r.id);
+      if (i < 0 || list[i]!.fetchedAt) { raced = true; return; }
+      list[i] = { ...list[i]!, fetchedAt: ctx.now() };
+      await ctx.write(grant, EXPORTS_DOC, list);
+    });
+    if (raced) return no(403, 'this export is downloaded');
+    await audit(ctx, grant, { by: sa, kind: 'export-fetch', exportId: r.id, accounts: found.size });
+    const rows = r.accounts.map((a) => ({ account: a, email: found.get(a)?.email ?? null, verifiedAt: found.get(a)?.verifiedAt ?? null }));
+    return ok({ app: r.app, approvedBy: r.approvedBy, rows });
+  }
+  return no(404, `unknown op ${op}`);
+}

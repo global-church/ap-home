@@ -98,6 +98,7 @@ import { handleEndeavorOp, reduceEventLog, coordinationEventsResource, COORDINAT
 import type { CoordinationEventV1 } from '@agenticprimitives/coordination';
 import { ERC1271_MAGIC_VALUE as ERC1271_MAGIC } from '@agenticprimitives/types';
 import { vaultServerId } from './vault-server-id.js';
+import { DIRECTORY_OPS, handleDirectoryOp, type DirectoryCtx, type Wire as DirectoryWire } from './operator-directory-ops.js';
 
 const ERC1271_ABI = [{ type: 'function', name: 'isValidSignature', stateMutability: 'view', inputs: [{ name: 'hash', type: 'bytes32' }, { name: 'signature', type: 'bytes' }], outputs: [{ type: 'bytes4' }] }] as const;
 const IS_REVOKED_ABI = [{ type: 'function', name: 'isRevoked', stateMutability: 'view', inputs: [{ name: 'delegationHash', type: 'bytes32' }], outputs: [{ name: 'revoked', type: 'bool' }] }] as const;
@@ -460,6 +461,10 @@ interface StoredState {
    *  stored wire is a bearer secret; the DO is the delegate-service side, spec 322 §2). The DO is
    *  now the sole holder+wielder for dm-body writes — no app (not even the Home) keeps it. */
   deliveryGrant?: IncomingDelegation;
+  /** The OPERATOR DIRECTORY grant (operator org → the directory service), scoped exactly to `vault:contact:*`,
+   *  `vault:directory.audit:*`, `vault:export:*`, read+write. Held only here; used only by operator-directory-ops.ts
+   *  (2026-10-23, gc-estate/docs/operator-workspace.md). */
+  directoryGrant?: IncomingDelegation;
   /** Issuance ledger (spec 322 W3e): every grant ever custodied here, hash/metadata only. */
   ledger?: GrantLedgerRowV1[];
   /** subject(lowercase caip10) → highest publishedAt accepted (replay guard) + tombstone flag. */
@@ -1986,6 +1991,55 @@ export class InteractionsDO {
     };
   }
 
+  /** One-at-a-time queues for the directory's shared records (the audit log, the export list). */
+  private readonly directoryQueues = new Map<string, Promise<unknown>>();
+
+  /** What operator-directory-ops.ts needs from this object: identity, on-chain checks, and the vault. */
+  private directoryCtx(principal: string): DirectoryCtx {
+    const toDelegation = (wire: DirectoryWire): Delegation =>
+      ({ ...wire, salt: BigInt(wire.salt as string), caveats: wire.caveats.map((c) => ({ enforcer: c.enforcer, terms: c.terms, args: (c.args ?? '0x') as Hex })) }) as unknown as Delegation;
+    return {
+      principal,
+      now: () => Date.now(),
+      newId: () => crypto.randomUUID(),
+      verifySession: async (s) => {
+        const v = await verifyHomeSession(s, this.env);
+        return v.ok ? { ok: true, sa: v.sa, ...(v.principal ? { principal: v.principal } : {}) } : { ok: false, error: v.error };
+      },
+      isSteward: (org, sa, wire) => this.isSteward(org, sa as Address, wire as unknown as IncomingDelegation | undefined),
+      grantSignatureOk: async (wire) => {
+        const digest = hashDelegation(toDelegation(wire), Number(this.env.CHAIN_ID ?? 84532), this.env.DELEGATION_MANAGER as Address);
+        return this.erc1271(wire.delegator as Address, digest, wire.signature as Hex);
+      },
+      recordScopes: (wire) => {
+        try {
+          const cav = (wire.caveats ?? []).find((c) => (c.enforcer ?? '').toLowerCase() === VAULT_RECORD_SCOPE_ENFORCER.toLowerCase());
+          return cav?.terms ? decodeVaultRecordScopeTerms(cav.terms as Hex).map((g) => ({ resources: [...g.resources], ops: [...g.ops] })) : null;
+        } catch { return null; }
+      },
+      expectedDelegate: (this.env.DELIVERY_SERVICE_SA ?? '').toLowerCase(),
+      getGrant: async () => (((await this.state.storage.get('state')) ?? {}) as StoredState).directoryGrant as unknown as DirectoryWire | undefined,
+      setGrant: async (wire) => {
+        const st = ((await this.state.storage.get('state')) ?? {}) as StoredState;
+        st.directoryGrant = wire as unknown as IncomingDelegation;
+        await this.state.storage.put('state', st);
+      },
+      read: async (g, resource) => (await this.vaultFor(g as unknown as IncomingDelegation).read<unknown>({ owner: '', resource }))?.data ?? null,
+      readMany: async (g, resources) => {
+        const resp = await this.mcpVaultTool(g as unknown as IncomingDelegation, 'get_vault_records', { recordTypes: resources });
+        const got = (await resp.json().catch(() => ({}))) as { ok?: boolean; records?: Record<string, unknown>; error?: string };
+        if (!resp.ok || got.ok === false || !got.records) throw new Error(`directory read: ${got.error ?? `the vault answered ${resp.status}`}`);
+        return got.records;
+      },
+      write: (g, resource, data) => this.writeDoc(g as unknown as IncomingDelegation, resource, data),
+      serial: <T,>(key: string, work: () => Promise<T>): Promise<T> => {
+        const next = (this.directoryQueues.get(key) ?? Promise.resolve()).then(work, work);
+        this.directoryQueues.set(key, next.catch(() => undefined));
+        return next;
+      },
+    };
+  }
+
   /** Spec 396 — every op runs under a fresh cost counter; the response carries the numbers as headers. */
   async fetch(request: Request): Promise<Response> {
     return countedOp(() => this.handleOp(request));
@@ -2083,6 +2137,13 @@ export class InteractionsDO {
       st.ledger = [...(st.ledger ?? []), { hash: digest, delegate: wire.delegate.toLowerCase(), resources: ['(delivery:write-only)'], storedAt: new Date().toISOString() }].slice(-50);
       await this.state.storage.put('state', st);
       return json({ ok: true });
+    }
+    // The OPERATOR DIRECTORY (2026-10-23). Its own admission per op — the person's session proving the email, a
+    // steward of the org, or an admin of this operator org — inside operator-directory-ops.ts. Before the session
+    // block because none of these ops is the owner acting on their own records.
+    if (DIRECTORY_OPS.has(op) && request.method === 'POST') {
+      const out = await handleDirectoryOp(this.directoryCtx(principal), op, body);
+      return json(out.body, out.status);
     }
     // spec 341 §5.5b — `invite.token` carries its own capability and must reach the grant WITHOUT a
     // session gate. Handled before the session block; the token is checked inside.
