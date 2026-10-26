@@ -82,7 +82,8 @@ const AUDIT_WORDS: Record<string, string> = {
 export function AdminOrganizations({ session }: { session: Session }) {
   const token = session.token;
   const me = useMemo(() => myAccount(token), [token]);
-  const [app, setApp] = useState('gather-app');
+  // All accounts first (Ryan, 2026-10-26); a Home without the operator directory has no such list, so it falls back.
+  const [app, setApp] = useState('all-accounts');
   const [view, setView] = useState<OrganizationsView | null | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
   const [notEnabled, setNotEnabled] = useState(false);
@@ -119,6 +120,7 @@ export function AdminOrganizations({ session }: { session: Session }) {
     const r = await fetch(`/connect/admin/organizations?app=${encodeURIComponent(app)}`, { headers: { authorization: `Bearer ${token}` } }).catch(() => null);
     const j = (await r?.json().catch(() => null)) as (OrganizationsView & { error?: string }) | null;
     setBusy(false);
+    if (r?.status === 400 && app === 'all-accounts') { setApp('gather-app'); return; }
     if (r?.ok && j) {
       setView(j);
       if (j.masked) void loadSide();
@@ -251,7 +253,7 @@ export function AdminOrganizations({ session }: { session: Session }) {
         <label className="admin-orgs__app">
           <span>App</span>
           <select value={app} onChange={(e) => { setApp(e.target.value); setType('all'); setNoEmail(false); }} data-testid="admin-orgs-app">
-            {(view?.apps ?? [{ id: 'gather-app', label: 'Gather' }]).map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
+            {(view?.apps ?? [{ id: 'all-accounts', label: 'All accounts' }, { id: 'gather-app', label: 'Gather' }]).map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
           </select>
         </label>
         <div className="admin-orgs__search">

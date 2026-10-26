@@ -192,7 +192,7 @@ export const onAdminOrganizations = async ({ request, env }: FnContext): Promise
   if (!g.ok) return g.res;
   if (!g.admin) return json({ error: 'not an admin of this Home' }, 403);
   const app = new URL(request.url).searchParams.get('app') ?? ADMIN_APPS[0].id;
-  const apps = operatorOrg(env) ? [...ADMIN_APPS, ALL_ACCOUNTS] : [...ADMIN_APPS];
+  const apps = operatorOrg(env) ? [ALL_ACCOUNTS, ...ADMIN_APPS] : [...ADMIN_APPS];
   if (!apps.some((a) => a.id === app)) return json({ error: app === ALL_ACCOUNTS.id ? 'All accounts needs the operator directory' : `unknown app: ${app}` }, 400);
   const kv = env.AUTH_CODES;
   const testPeople = testAddresses(await listKeys(kv, TEST_AGENT_PREFIX));
