@@ -76,7 +76,7 @@ interface AuditEntry { at: number; by: string; kind: string; accounts?: number; 
 
 const AUDIT_WORDS: Record<string, string> = {
   list: 'opened the list', reveal: 'showed one address', 'export-request': 'requested an export', 'export-approve': 'approved an export',
-  'export-deny': 'denied an export', 'export-fetch': 'downloaded an export', import: 'imported the old directory', enable: 'enabled the directory',
+  'export-deny': 'denied an export', 'export-fetch': 'downloaded an export', import: 'imported the old directory', enable: 'enabled the directory', 'old-removed': 'removed the old directory',
 };
 
 export function AdminOrganizations({ session }: { session: Session }) {
@@ -214,6 +214,13 @@ export function AdminOrganizations({ session }: { session: Session }) {
     await directory('enable', { delegation: { ...delegation, salt: delegation.salt.toString() } });
     setNote('The operator directory is enabled.');
     await load();
+  });
+
+  const removeOld = () => run(async () => {
+    if (!window.confirm('Delete the old directory’s records for good? Do this only after the import. The operator directory keeps its own copy.')) return;
+    const r = await directory<{ removed: number }>('remove-old');
+    setNote(`Removed ${r.removed} records from the old directory.`);
+    void loadSide();
   });
 
   const importOld = () => run(async () => {
@@ -426,6 +433,7 @@ export function AdminOrganizations({ session }: { session: Session }) {
           {masked && (
             <Note>
               Moving from the old directory? <button type="button" className="admin-orgs__reveal" onClick={() => void importOld()} data-testid="admin-orgs-import">Import the old directory</button> (once; addresses already in the operator directory are kept).
+              {' '}After the import: <button type="button" className="admin-orgs__reveal" onClick={() => void removeOld()} data-testid="admin-orgs-remove-old">Remove the old directory</button> (deletes its leftover encrypted records; recorded).
             </Note>
           )}
           {!masked && view.views.length > 0 && (

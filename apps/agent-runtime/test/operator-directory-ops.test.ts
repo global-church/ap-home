@@ -89,7 +89,7 @@ describe('an organization’s contact', () => {
 
 describe('admins only', () => {
   it('refuses a non-admin, and an admin presenting someone else’s grant', async () => {
-    for (const op of ['directory.masked', 'directory.reveal', 'directory.audit', 'export.request', 'export.list', 'directory.import']) {
+    for (const op of ['directory.masked', 'directory.reveal', 'directory.audit', 'export.request', 'export.list', 'directory.import', 'directory.oldRemoved']) {
       expect((await call(h, op, { ...as(MALLORY), account: HOST, accounts: [HOST] })).status, op).toBe(403);
       expect((await call(h, op, { session: `session:${MALLORY}:-`, stewardship: wire(OPERATOR, RYAN), account: HOST, accounts: [HOST] })).status, op).toBe(403);
     }
@@ -105,6 +105,10 @@ describe('admins only', () => {
     await call(h, 'directory.record', { session: `session:${HOST}:pastor@grace.org`, email: 'pastor@grace.org' });
     expect((await call(h, 'directory.reveal', { ...as(PAUL), account: HOST })).body).toMatchObject({ email: 'pastor@grace.org' });
     expect(audit(h).at(-1)).toMatchObject({ kind: 'reveal', by: PAUL });
+  });
+  it('removing the old directory is recorded with who and how many', async () => {
+    expect((await call(h, 'directory.oldRemoved', { ...as(RYAN), count: 309 })).status).toBe(200);
+    expect(audit(h).at(-1)).toMatchObject({ kind: 'old-removed', by: RYAN, accounts: 309 });
   });
   it('enabling requires exactly the directory scope, the right delegate and a valid signature', async () => {
     const good = { ...wire(OPERATOR, SERVICE), scopes: [{ resources: ['vault:contact:*', 'vault:directory.audit:*', 'vault:export:*'], ops: ['read', 'write'] }] };

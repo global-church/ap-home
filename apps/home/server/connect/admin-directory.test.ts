@@ -108,7 +108,7 @@ describe('All accounts (2026-10-26)', () => {
 
 describe('directory actions', () => {
   it('refuse a non-admin before reaching the directory', async () => {
-    for (const action of ['reveal', 'export-request', 'export-approve', 'export-fetch', 'audit', 'import']) {
+    for (const action of ['reveal', 'export-request', 'export-approve', 'export-fetch', 'audit', 'import', 'remove-old']) {
       const r = await onAdminDirectory({ request: req('/connect/admin/directory', `tok:${MALLORY}`, { action, account: HOST, id: 'x' }), env });
       expect(r.status, action).toBe(403);
     }
@@ -118,6 +118,24 @@ describe('directory actions', () => {
     await onAdminDirectory({ request: req('/connect/admin/directory', `tok:${RYAN}`, { action: 'reveal', account: HOST, session: 'tok:someone-else', stewardship: { forged: true } }), env });
     expect(doCalls[0]!.url).toBe(`https://runtime.test/interactions/${OPERATOR}/directory.reveal`);
     expect(doCalls[0]!.body).toMatchObject({ session: `tok:${RYAN}`, stewardship: ryanLink.stewardshipDelegation, account: HOST });
+  });
+  it('removing the old directory is recorded first, then its records go (2026-10-26)', async () => {
+    const kv = (env as unknown as { AUTH_CODES: { put: (k: string, v: string) => Promise<void>; get: (k: string) => Promise<string | null> } }).AUTH_CODES;
+    await kv.put(`contact:${HOST}`, '{"cipher":"x"}');
+    await kv.put('contact-views:log', '[]');
+    const r = await onAdminDirectory({ request: req('/connect/admin/directory', `tok:${RYAN}`, { action: 'remove-old' }), env });
+    expect(r.status).toBe(200);
+    expect(doCalls[0]!.url).toBe(`https://runtime.test/interactions/${OPERATOR}/directory.oldRemoved`);
+    expect(doCalls[0]!.body).toMatchObject({ count: 1 });
+    expect(await kv.get(`contact:${HOST}`)).toBeNull();
+    expect(await kv.get('contact-views:log')).toBeNull();
+  });
+  it('nothing is deleted if the record of it cannot be written', async () => {
+    const kv = (env as unknown as { AUTH_CODES: { put: (k: string, v: string) => Promise<void>; get: (k: string) => Promise<string | null> } }).AUTH_CODES;
+    await kv.put(`contact:${HOST}`, '{"cipher":"x"}');
+    vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ ok: false, error: 'vault down' }), { status: 502 }));
+    expect((await onAdminDirectory({ request: req('/connect/admin/directory', `tok:${RYAN}`, { action: 'remove-old' }), env })).status).toBe(502);
+    expect(await kv.get(`contact:${HOST}`)).not.toBeNull();
   });
   it('an unknown action is refused', async () => {
     expect((await onAdminDirectory({ request: req('/connect/admin/directory', `tok:${RYAN}`, { action: 'dump-everything' }), env })).status).toBe(400);

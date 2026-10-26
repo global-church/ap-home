@@ -240,6 +240,7 @@ export const onAdminOrganizations = async ({ request, env }: FnContext): Promise
 const DIRECTORY_ACTIONS: Record<string, string> = {
   reveal: 'directory.reveal', audit: 'directory.audit', 'export-request': 'export.request', 'export-list': 'export.list',
   'export-approve': 'export.approve', 'export-deny': 'export.deny', 'export-fetch': 'export.fetch', import: 'directory.import', enable: 'directory.enable',
+  'remove-old': 'directory.oldRemoved',
 };
 
 export const onAdminDirectory = async ({ request, env }: FnContext): Promise<Response> => {
@@ -253,6 +254,16 @@ export const onAdminDirectory = async ({ request, env }: FnContext): Promise<Res
   const stewardship = g.stewardship ?? (op === 'directory.enable' ? body.stewardship : null);
   if (!g.admin && op !== 'directory.enable') return json({ error: 'not an admin of this Home' }, 403);
   const { action: _a, session: _s, stewardship: _w, ...rest } = body;
+  if (op === 'directory.oldRemoved') {
+    // Delete the old encrypted KV directory (2026-10-26), after the import. Recorded in the operator directory's audit
+    // log FIRST (who, how many); if that fails nothing is deleted. Its key is already gone, so these are unreadable.
+    const keys = [...(await listKeys(env.AUTH_CODES, 'contact:0x')), 'contact-views:log'];
+    const noted = await directoryOp(env, op, { session: g.token, stewardship, count: keys.length - 1 });
+    if (noted.status !== 200) return json({ error: String(noted.body.error ?? `the directory answered ${noted.status}`) }, noted.status);
+    for (let i = 0; i < keys.length; i += 50) await Promise.all(keys.slice(i, i + 50).map((k) => env.AUTH_CODES.delete(k)));
+    console.info('[operator-directory] old directory removed', { records: keys.length - 1 });
+    return json({ ok: true, removed: keys.length - 1 });
+  }
   if (op === 'directory.import') {
     // The old KV copies, decrypted once here with the old key and handed to the DO, which records the import.
     const keys = (await listKeys(env.AUTH_CODES, 'contact:0x')).map((k) => k.slice('contact:'.length));

@@ -44,7 +44,7 @@ const no = (status: number, error: string): Out => ({ status, body: { ok: false,
 
 export const DIRECTORY_OPS = new Set([
   'directory.enable', 'directory.record', 'directory.defaultOrg', 'directory.recordOrg', 'directory.masked',
-  'directory.reveal', 'directory.audit', 'directory.import', 'export.request', 'export.list', 'export.approve',
+  'directory.reveal', 'directory.audit', 'directory.import', 'directory.oldRemoved', 'export.request', 'export.list', 'export.approve',
   'export.deny', 'export.fetch',
 ]);
 
@@ -162,6 +162,13 @@ export async function handleDirectoryOp(ctx: DirectoryCtx, op: string, body: Rec
   if (op === 'directory.audit') {
     const log = ((await ctx.read(grant, AUDIT_LOG)) as AuditEntry[] | null) ?? [];
     return ok({ entries: [...log].reverse().slice(0, Math.min(Number(body.limit ?? 50) || 50, 500)) });
+  }
+  if (op === 'directory.oldRemoved') {
+    // The Home is about to delete the old encrypted KV directory (2026-10-26). Recorded here, BEFORE it happens, with
+    // who and how many: the old store has no log of its own.
+    const count = Math.max(0, Math.floor(Number(body.count ?? 0)) || 0);
+    await audit(ctx, grant, { by: sa, kind: 'old-removed', accounts: count });
+    return ok();
   }
   if (op === 'directory.import') {
     const rows = Array.isArray(body.records) ? (body.records as { account?: unknown; email?: unknown; verifiedAt?: unknown; source?: unknown }[]) : [];

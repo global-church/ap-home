@@ -73,7 +73,7 @@ export async function sessionProvesEmail(principal: { kind: string; id: string }
 
 // ── Audit ───────────────────────────────────────────────────────────────────────────────────────────────────────
 
-export type AuditKind = 'list' | 'reveal' | 'export-request' | 'export-approve' | 'export-fetch' | 'export-deny' | 'import' | 'enable';
+export type AuditKind = 'list' | 'reveal' | 'export-request' | 'export-approve' | 'export-fetch' | 'export-deny' | 'import' | 'enable' | 'old-removed';
 export interface AuditEntry { at: number; by: string; kind: AuditKind; accounts?: number; account?: string; exportId?: string; note?: string }
 
 /** Bounded, but list views are dropped first (security review 2026-10-23, #3): opening the masked list again and
