@@ -979,43 +979,13 @@ export async function createGovernedWorkspace(
   if (!created.ok) return { ok: false, error: `${governorName} is ready, but its workspace could not be created: ${created.error}` };
   const ws = created.result.agent;
   const wsStewardship = created.result.stewardshipDelegation;
-  // The realm is USABLE from the first approval or it is not created: the same storage trio org-create runs —
-  // vault binding is REQUIRED (every ws-* write gates on it), delivery + interactions are best-effort like everywhere.
-  step(4, 'Enabling workspace storage…');
-  const bound = await activateVaultIfNeeded(ws, via, auth);
-  if (!bound.ok) return { ok: false, error: bound.error };
-  const delivery = await activateInboxDeliveryIfNeeded(ws, via, auth);
-  if (!delivery.ok) console.warn('[workspace-create] delivery grant not provisioned:', delivery.error);
-  const ix = await activateInteractionsIfNeeded(ws, via, auth, false, ORG_INTERACTIONS_SESSION_LEAF_TTL_SECONDS);
-  if (!ix.ok) console.warn('[workspace-create] interactions grant not provisioned:', ix.error);
-
-  // 3. THE PAIR. Required: a workspace without its pointer is a legacy one to every reader, which is the state this
-  // ceremony exists to stop producing.
-  step(5, 'Recording which organization governs it…');
+  // Storage, the governor's content read, and the governance pair (shared with the charter button — governWorkspace).
   if (!wsStewardship) return { ok: false, error: `${created.result.name} was created without a stewardship wire, so its governor could not be recorded` };
-  // Spec 424 — the member-read path: the workspace grants its governing ORG a CONTENT read of itself, signed as the
-  // workspace (server-side for a KMS workspace). A member then reads the workspace's content by chaining their org
-  // membership onto this grant (the field runtime presents the chain) — "read through the governor", never a
-  // relationship to the workspace agent (the hub doctrine). Content only; best-effort, like the other ws grants.
-  let governorRead: DelegationWire | undefined;
-  try {
-    const signWs = await signHashFor(via, ws, auth);
-    governorRead = toWire(await issueOrgReadDelegation(ws, governor, { server: MCP_SERVER_ID, resources: WORKSPACE_CONTENT_SCOPE }, signWs));
-  } catch (e) { console.warn('[workspace-create] governor content-read grant not minted:', e instanceof Error ? e.message : String(e)); }
-  try {
-    await writeGovernancePair({ orgStewardship, wsStewardship, governor, workspace: ws, label: created.result.name || name, purpose, ...(governorRead ? { governorRead } : {}) });
-  } catch (e) {
-    return { ok: false, error: `${created.result.name} and ${governorName} were created, but the record that ${governorName} governs the workspace could not be written: ${e instanceof Error ? e.message : String(e)}` };
-  }
-  // Spec 424 §2.3 — the serving-plane projection every MEMBER's `related-orgs` synthesizes into an enterable
-  // workspace row (so a member finds the workspace and is handed the workspace→org content grant to chain onto).
-  // Best-effort and rebuildable from the pair above; a member with no projection simply sees no workspace yet.
-  if (governorRead) {
-    await fetch('/connect/related-orgs', {
-      method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-      body: JSON.stringify({ person: home.address, orgAgent: governor, governedWorkspace: { workspace: ws, workspaceName: created.result.name || name, grant: governorRead } }),
-    }).catch((e) => console.warn('[workspace-create] governed-workspace projection not written:', e instanceof Error ? e.message : String(e)));
-  }
+  const governed = await governWorkspace({
+    ws, wsStewardship, governor, orgStewardship, label: created.result.name || name, governorName, purpose, person: home.address, via, auth, token,
+    onStep: (n, label) => step(n === 1 ? 4 : 5, label),
+  });
+  if (!governed.ok) return governed;
   return {
     ok: true,
     org: {
@@ -1030,6 +1000,68 @@ export async function createGovernedWorkspace(
     },
     grant: wsStewardship,
   };
+}
+
+/**
+ * Make a just-created workspace USABLE and GOVERNED: its storage trio (vault binding required; delivery and
+ * interactions best-effort), the workspace → governor content-read grant (spec 424, best-effort), the governance pair
+ * (`workspace:<ws>` in the org's vault, `workspace.governor` in the workspace's — required), and the member projection.
+ * One implementation for the onboarding ceremony (createGovernedWorkspace) and the "Charter inside this organization"
+ * button (createAgentWithBirthrights), so a chartered workspace is never born without a governor or storage
+ * (2026-10-26: the button used to skip all of this).
+ */
+export async function governWorkspace(input: {
+  ws: Address;
+  wsStewardship: DelegationWire;
+  governor: Address;
+  orgStewardship: DelegationWire;
+  label: string;
+  governorName: string;
+  purpose: string;
+  person: Address;
+  via: Via;
+  auth: Auth | undefined;
+  token: string;
+  onStep?: (n: 1 | 2, label: string) => void;
+}): Promise<Result<{ governorRead?: DelegationWire }>> {
+  const { ws, wsStewardship, governor, orgStewardship, label, governorName, purpose, person, via, auth, token } = input;
+  // The realm is USABLE from the first approval or it is not created: the same storage trio org-create runs —
+  // vault binding is REQUIRED (every ws-* write gates on it), delivery + interactions are best-effort like everywhere.
+  input.onStep?.(1, 'Enabling workspace storage…');
+  const bound = await activateVaultIfNeeded(ws, via, auth);
+  if (!bound.ok) return { ok: false, error: bound.error };
+  const delivery = await activateInboxDeliveryIfNeeded(ws, via, auth);
+  if (!delivery.ok) console.warn('[workspace-create] delivery grant not provisioned:', delivery.error);
+  const ix = await activateInteractionsIfNeeded(ws, via, auth, false, ORG_INTERACTIONS_SESSION_LEAF_TTL_SECONDS);
+  if (!ix.ok) console.warn('[workspace-create] interactions grant not provisioned:', ix.error);
+
+  // 3. THE PAIR. Required: a workspace without its pointer is a legacy one to every reader, which is the state this
+  // ceremony exists to stop producing.
+  input.onStep?.(2, 'Recording which organization governs it…');
+  // Spec 424 — the member-read path: the workspace grants its governing ORG a CONTENT read of itself, signed as the
+  // workspace (server-side for a KMS workspace). A member then reads the workspace's content by chaining their org
+  // membership onto this grant (the field runtime presents the chain) — "read through the governor", never a
+  // relationship to the workspace agent (the hub doctrine). Content only; best-effort, like the other ws grants.
+  let governorRead: DelegationWire | undefined;
+  try {
+    const signWs = await signHashFor(via, ws, auth);
+    governorRead = toWire(await issueOrgReadDelegation(ws, governor, { server: MCP_SERVER_ID, resources: WORKSPACE_CONTENT_SCOPE }, signWs));
+  } catch (e) { console.warn('[workspace-create] governor content-read grant not minted:', e instanceof Error ? e.message : String(e)); }
+  try {
+    await writeGovernancePair({ orgStewardship, wsStewardship, governor, workspace: ws, label, purpose, ...(governorRead ? { governorRead } : {}) });
+  } catch (e) {
+    return { ok: false, error: `${label} and ${governorName} were created, but the record that ${governorName} governs the workspace could not be written: ${e instanceof Error ? e.message : String(e)}` };
+  }
+  // Spec 424 §2.3 — the serving-plane projection every MEMBER's `related-orgs` synthesizes into an enterable
+  // workspace row (so a member finds the workspace and is handed the workspace→org content grant to chain onto).
+  // Best-effort and rebuildable from the pair above; a member with no projection simply sees no workspace yet.
+  if (governorRead) {
+    await fetch('/connect/related-orgs', {
+      method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify({ person, orgAgent: governor, governedWorkspace: { workspace: ws, workspaceName: label, grant: governorRead } }),
+    }).catch((e) => console.warn('[workspace-create] governed-workspace projection not written:', e instanceof Error ? e.message : String(e)));
+  }
+  return { ok: true, ...(governorRead ? { governorRead } : {}) };
 }
 
 /**

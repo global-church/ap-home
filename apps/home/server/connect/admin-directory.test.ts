@@ -86,6 +86,26 @@ describe('the organizations list', () => {
   });
 });
 
+describe('All accounts (2026-10-26)', () => {
+  it('admin only; every account behind a sign-in, masked', async () => {
+    (env as unknown as { AUTH_CODES: { put: (k: string, v: string) => Promise<void> } }).AUTH_CODES.put(
+      'facet:email:h1', JSON.stringify([{ agent: `eip155:28190:${HOST}`, assurance: 'verified', ref: 'kv-email' }]),
+    );
+    expect((await onAdminOrganizations({ request: req('/connect/admin/organizations?app=all-accounts', `tok:${MALLORY}`), env })).status).toBe(403);
+    const r = await onAdminOrganizations({ request: req('/connect/admin/organizations?app=all-accounts', `tok:${RYAN}`), env });
+    const text = await r.text();
+    expect(r.status).toBe(200);
+    const j = JSON.parse(text) as { rows: string; orgs: { org: string; orgContact: { email: string } | null }[] };
+    expect(j.rows).toBe('accounts');
+    expect(j.orgs.find((o) => o.org === HOST)?.orgContact?.email).toBe('pa•••r@g•••.org');
+    expect(text).not.toContain('pastor@grace.org');
+  });
+  it('is not offered without the operator directory', async () => {
+    const plain = { ...(env as object), HOME_OPERATOR_ORG: undefined, HOME_ADMINS: RYAN } as never;
+    expect((await onAdminOrganizations({ request: req('/connect/admin/organizations?app=all-accounts', `tok:${RYAN}`), env: plain })).status).toBe(400);
+  });
+});
+
 describe('directory actions', () => {
   it('refuse a non-admin before reaching the directory', async () => {
     for (const action of ['reveal', 'export-request', 'export-approve', 'export-fetch', 'audit', 'import']) {

@@ -37,6 +37,9 @@ export interface CoManagerOffer {
   orgName: string;
   offeredBy: string;
   offeredAt: number;
+  /** The agent's kind and parent as the offering manager's link records them (an org, or a workspace under its governor). */
+  kind?: string;
+  parent?: string;
   /** Present only while pending. */
   delegation?: IncomingDelegation;
   acceptedAt?: number;
@@ -103,10 +106,13 @@ export const onCoManagerPost = async ({ request, env }: FnContext): Promise<Resp
     if (!(await verifyStewardship(env, org, person, body.delegation))) {
       return json({ error: 'the grant is not a valid stewardship of this organization for that person' }, 400);
     }
-    const link = await readJson<{ orgName?: string; displayName?: string }>(env.AUTH_CODES, `related:${ctl.person}:${org}`);
+    const link = await readJson<{ orgName?: string; displayName?: string; kind?: string; parent?: string }>(env.AUTH_CODES, `related:${ctl.person}:${org}`);
     const offer: CoManagerOffer = {
       org, person, orgName: link?.displayName || link?.orgName || org,
       offeredBy: ctl.person, offeredAt: Date.now(), delegation: body.delegation!,
+      ...(link?.kind ? { kind: link.kind } : {}),
+      // A workspace's parent is its governing org; an org's own parent is its creator, so the offerer stands in.
+      ...(link?.kind && link.kind !== 'org' && link.parent ? { parent: link.parent } : {}),
     };
     await env.AUTH_CODES.put(offerKey(person, org), JSON.stringify(offer), { expirationTtl: OFFER_TTL_S });
     const idx = (await readJson<string[]>(env.AUTH_CODES, orgIndex(org))) ?? [];
@@ -135,8 +141,8 @@ export const onCoManagerPost = async ({ request, env }: FnContext): Promise<Resp
       orgName: existing.orgName ?? offer.orgName,
       purpose: existing.purpose ?? 'co-manager',
       requestedBy: existing.requestedBy ?? 'home-co-manager',
-      kind: existing.kind ?? 'org',
-      parent: existing.parent ?? offer.offeredBy,
+      kind: existing.kind ?? offer.kind ?? 'org',
+      parent: existing.parent ?? offer.parent ?? offer.offeredBy,
       relationship: 'steward',
       stewardshipDelegation: offer.delegation,
       createdAt: existing.createdAt ?? Date.now(),

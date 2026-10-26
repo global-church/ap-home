@@ -94,6 +94,26 @@ export function countAccounts(facets: { key: string; value: string | null }[], t
   };
 }
 
+/** One GCID account for Admin → All accounts (2026-10-26): every person behind a live sign-in, with how they sign in.
+ *  The same people `countAccounts` counts, so the list and the Overview number agree. Test identities are flagged,
+ *  not dropped, so the page can show or hide them. */
+export interface AccountRow { account: string; methods: SignInMethod[]; test: boolean }
+
+export function listAccounts(facets: { key: string; value: string | null }[], testPeople: ReadonlySet<string> = new Set()): AccountRow[] {
+  const by = new Map<string, Set<SignInMethod>>();
+  for (const f of facets) {
+    const m = methodOf(f.key);
+    for (const l of liveLinks(parseLinks(f.value))) {
+      const a = addressOf(String(l.agent));
+      if (!ADDRESS.test(a)) continue;
+      (by.get(a) ?? by.set(a, new Set()).get(a)!).add(m);
+    }
+  }
+  return [...by.entries()]
+    .map(([account, ms]) => ({ account, methods: [...ms].sort(), test: testPeople.has(account) }))
+    .sort((x, y) => x.account.localeCompare(y.account));
+}
+
 export interface OrgCounts {
   /** Distinct organizations (every kind but a workspace). */
   organizations: number;

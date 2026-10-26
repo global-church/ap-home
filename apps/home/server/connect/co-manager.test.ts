@@ -75,6 +75,13 @@ describe('accepting', () => {
   it('a custodian that does not control the person’s account is refused', async () => {
     expect((await post(`tok:${PAUL}`, { action: 'accept', org: ORG, custodian: A(66) })).status).toBe(400);
   });
+  it('a workspace stays a workspace under its governor when the co-manager accepts (2026-10-26)', async () => {
+    const GOVERNOR = A(901);
+    store.m.set(`related:${RYAN}:${ORG}`, JSON.stringify({ kind: 'workspace', parent: GOVERNOR, orgName: 'gcid-operations.workspace' }));
+    await post(`tok:${RYAN}`, { action: 'offer', org: ORG, person: PAUL, delegation: grant(PAUL) });
+    expect((await post(`tok:${PAUL}`, { action: 'accept', org: ORG })).status).toBe(200);
+    expect(JSON.parse(store.m.get(`related:${PAUL}:${ORG}`)!)).toMatchObject({ kind: 'workspace', parent: GOVERNOR, relationship: 'steward' });
+  });
   it('the manager’s list never returns the grant', async () => {
     const r = await onCoManagerGet({ request: new Request(`https://gcid.test/connect/co-manager?org=${ORG}`, { headers: { authorization: `Bearer tok:${RYAN}` } }), env });
     const j = (await r.json()) as { offers: Record<string, unknown>[] };

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { countAccounts, countOrgs, growth, tallyOrgTypes, listAppOrganizations, isAdmin, methodOf, parseAdmins, recordSnapshot, type Snapshot } from './admin-stats';
+import { countAccounts, listAccounts, countOrgs, growth, tallyOrgTypes, listAppOrganizations, isAdmin, methodOf, parseAdmins, recordSnapshot, type Snapshot } from './admin-stats';
 
 const A = '0x' + 'a'.repeat(40);
 const B = '0x' + 'b'.repeat(40);
@@ -143,5 +143,22 @@ describe('organizations by app (2026-10-22)', () => {
       link(P(9), P(500), { orgName: 'Load test org', requestedBy: 'gather-app', kind: 'org', createdAt: 1 }),
     ], 'gather-app', new Set([P(9)]));
     expect(rows.map((r) => [r.org, r.test])).toEqual([[P(500), true]]);
+  });
+});
+
+describe('All accounts (2026-10-26)', () => {
+  it('one row per person, with every way they sign in; the same people countAccounts counts', () => {
+    const facets = [
+      { key: 'facet:email:h1', value: JSON.stringify([link(A)]) },
+      { key: 'facet:cred:passkey:d1', value: JSON.stringify([link(A, 'kv-cred')]) },
+      { key: 'facet:phone:h2', value: JSON.stringify(link(B, 'kv-phone')) },
+      { key: 'facet:email:h3', value: JSON.stringify([link(C), { agent: sa(C), assurance: 'unverified', ref: 'tombstone:kv-email' }]) },
+    ];
+    const rows = listAccounts(facets, new Set([B.toLowerCase()]));
+    // C unlinked their only email (tombstone), so C is not an account any more.
+    expect(rows.map((r) => r.account)).toEqual([A, B].map((x) => x.toLowerCase()).sort());
+    expect(rows.find((r) => r.account === A.toLowerCase())!.methods).toEqual(['email', 'passkey']);
+    expect(rows.find((r) => r.account === B.toLowerCase())!.test).toBe(true);
+    expect(rows.filter((r) => !r.test).length).toBe(countAccounts(facets, new Set([B.toLowerCase()])).accounts);
   });
 });

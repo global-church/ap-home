@@ -52,6 +52,17 @@ function csv(rows: OrganizationRow[], emails?: Map<string, string | null>): stri
   return [head.join(','), ...body].join('\r\n');
 }
 
+/** All accounts (2026-10-26): one row per GCID account — the account, its sign-in email, how it signs in. */
+function accountsCsv(rows: { account: string; email: string | null }[], methods: Map<string, string[]>): string {
+  const cell = (v: unknown) => {
+    const s = String(v ?? '');
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  return [['Account', 'Email', 'Signs in with'].join(','), ...rows.map((r) => [r.account, r.email ?? '', (methods.get(r.account) ?? []).join('; ')].map(cell).join(','))].join('\r\n');
+}
+
+const METHOD_WORDS: Record<string, string> = { email: 'Email', phone: 'Phone', google: 'Google', passkey: 'Passkey', other: 'Other' };
+
 function save(name: string, text: string) {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([text], { type: 'text/csv' }));
@@ -120,6 +131,7 @@ export function AdminOrganizations({ session }: { session: Session }) {
   useEffect(() => { void load(); }, [load]);
 
   const masked = view?.masked === true;
+  const accountsMode = view?.rows === 'accounts';
   const base = useMemo(() => (view?.orgs ?? []).filter((o) => showTest || !o.test), [view, showTest]);
   const types = useMemo(() => {
     const m = new Map<string, { label: string; count: number }>();
@@ -139,11 +151,14 @@ export function AdminOrganizations({ session }: { session: Session }) {
       if (type !== 'all' && typeKey(o) !== type) return false;
       if (noEmail && reachable(o)) return false;
       if (!needle) return true;
-      return [o.name, o.org, typeText(o), o.orgContact?.email ?? '', ...o.contacts.flatMap((c) => [c.email ?? '', c.account])].some((s) => s.toLowerCase().includes(needle));
+      return [o.name, o.org, typeText(o), o.orgContact?.email ?? '', ...(o.methods ?? []), ...o.contacts.flatMap((c) => [c.email ?? '', c.account])].some((s) => s.toLowerCase().includes(needle));
     });
   }, [base, q, type, noEmail]);
 
-  const fileName = () => `${view?.apps.find((x) => x.id === app)?.label ?? app}-organizations-${new Date().toISOString().slice(0, 10)}.csv`;
+  const fileName = (forApp = app) =>
+    forApp === 'all-accounts'
+      ? `gcid-accounts-${new Date().toISOString().slice(0, 10)}.csv`
+      : `${view?.apps.find((x) => x.id === forApp)?.label ?? forApp}-organizations-${new Date().toISOString().slice(0, 10)}.csv`;
 
   const run = async (fn: () => Promise<void>) => {
     setError(null);
@@ -162,7 +177,7 @@ export function AdminOrganizations({ session }: { session: Session }) {
     if (why === null) return;
     const accounts = [...new Set(shown.flatMap((o) => [o.org, ...o.contacts.map((c) => c.account)]))];
     await directory('export-request', { app, accounts, note: why });
-    setNote(`Export requested for ${shown.length} organization${shown.length === 1 ? '' : 's'}. Another admin has to approve it before you can download it.`);
+    setNote(`Export requested for ${shown.length} ${accountsMode ? 'account' : 'organization'}${shown.length === 1 ? '' : 's'}. Another admin has to approve it before you can download it.`);
     void loadSide();
   });
 
@@ -173,6 +188,14 @@ export function AdminOrganizations({ session }: { session: Session }) {
 
   const fetchExport = (r: ExportSummary) => run(async () => {
     const got = await directory<{ rows: { account: string; email: string | null }[] }>('export-fetch', { id: r.id });
+    if (r.app === 'all-accounts') {
+      // Built from the approved rows themselves, so it is right whichever list is on screen.
+      const methods = new Map((view?.rows === 'accounts' ? view.orgs : []).map((o) => [o.org, o.methods ?? []]));
+      save(fileName('all-accounts'), accountsCsv(got.rows, methods));
+      void loadSide();
+      return;
+    }
+    if (r.app !== app) throw new Error(`This export is for ${view?.apps.find((x) => x.id === r.app)?.label ?? r.app}. Switch the list to it first, then download.`);
     const emails = new Map(got.rows.map((x) => [x.account, x.email]));
     const rows = (view?.orgs ?? []).filter((o) => emails.has(o.org) || o.contacts.some((c) => emails.has(c.account)));
     save(fileName(), csv(rows, emails));
@@ -227,12 +250,12 @@ export function AdminOrganizations({ session }: { session: Session }) {
       <Toolbar>
         <label className="admin-orgs__app">
           <span>App</span>
-          <select value={app} onChange={(e) => setApp(e.target.value)} data-testid="admin-orgs-app">
+          <select value={app} onChange={(e) => { setApp(e.target.value); setType('all'); setNoEmail(false); }} data-testid="admin-orgs-app">
             {(view?.apps ?? [{ id: 'gather-app', label: 'Gather' }]).map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
           </select>
         </label>
         <div className="admin-orgs__search">
-          <SearchInput value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search name, type or address" aria-label="Search organizations" data-testid="admin-orgs-q" />
+          <SearchInput value={q} onChange={(e) => setQ(e.target.value)} placeholder={accountsMode ? 'Search address, email or sign-in' : 'Search name, type or address'} aria-label={accountsMode ? 'Search accounts' : 'Search organizations'} data-testid="admin-orgs-q" />
         </div>
         {masked ? (
           <Button size="sm" onClick={() => void requestExport()} disabled={!shown.length} data-testid="admin-orgs-export-request">Request export</Button>
@@ -254,11 +277,19 @@ export function AdminOrganizations({ session }: { session: Session }) {
       {view === null && !error && !notEnabled && <Empty title="Organizations are unavailable" />}
       {view && (
         <>
-          <Stats>
-            <Stat label="organizations" value={base.length.toLocaleString()} testId="admin-orgs-total" />
-            <Stat label="with a contact email" value={withEmail.toLocaleString()} />
-            <Stat label="no type yet" value={(types.find(([k]) => k === 'none')?.[1].count ?? 0).toLocaleString()} />
-          </Stats>
+          {accountsMode ? (
+            <Stats>
+              <Stat label="accounts" value={base.length.toLocaleString()} testId="admin-orgs-total" />
+              <Stat label="with a sign-in email" value={withEmail.toLocaleString()} />
+              <Stat label="no email on file" value={(base.length - withEmail).toLocaleString()} />
+            </Stats>
+          ) : (
+            <Stats>
+              <Stat label="organizations" value={base.length.toLocaleString()} testId="admin-orgs-total" />
+              <Stat label="with a contact email" value={withEmail.toLocaleString()} />
+              <Stat label="no type yet" value={(types.find(([k]) => k === 'none')?.[1].count ?? 0).toLocaleString()} />
+            </Stats>
+          )}
           {masked && pending.length > 0 && (
             <Section title="Export requests" count={pending.length} testId="admin-orgs-exports">
               <div className="admin-orgs__scroll">
@@ -269,7 +300,7 @@ export function AdminOrganizations({ session }: { session: Session }) {
                       <tr key={r.id} data-testid={`admin-orgs-export-${r.id.slice(0, 8)}`}>
                         <td>{when(r.requestedAt)}</td>
                         <td><Mono title={r.requestedBy}>{r.requestedBy === me ? 'you' : short(r.requestedBy)}</Mono></td>
-                        <td>{r.count}</td>
+                        <td>{r.count}{r.app === 'all-accounts' ? <> <Meta>accounts</Meta></> : null}</td>
                         <td>{r.note || <Meta>—</Meta>}</td>
                         <td>{r.status === 'pending' ? 'waiting for a second admin' : `approved by ${r.approvedBy === me ? 'you' : short(r.approvedBy ?? '')}`}</td>
                         <td>
@@ -289,16 +320,38 @@ export function AdminOrganizations({ session }: { session: Session }) {
               <Note>An export needs a second admin. Once approved, the admin who requested it can download it once, within 30 minutes.</Note>
             </Section>
           )}
-          <div className="admin-orgs__filters" role="group" aria-label="Filter by type">
-            <FilterChip active={type === 'all'} count={base.length} onClick={() => setType('all')}>All types</FilterChip>
-            {types.map(([k, t]) => (
+          <div className="admin-orgs__filters" role="group" aria-label={accountsMode ? 'Filter accounts' : 'Filter by type'}>
+            {!accountsMode && <FilterChip active={type === 'all'} count={base.length} onClick={() => setType('all')}>All types</FilterChip>}
+            {!accountsMode && types.map(([k, t]) => (
               <FilterChip key={k} active={type === k} count={t.count} onClick={() => setType(type === k ? 'all' : k)} data-testid={`admin-orgs-type-${k === 'none' || k === 'other' ? k : k.split('-').pop()}`}>{t.label}</FilterChip>
             ))}
-            <span className="admin-orgs__sep" aria-hidden />
-            <FilterChip active={noEmail} onClick={() => setNoEmail(!noEmail)}>No contact email</FilterChip>
+            {!accountsMode && <span className="admin-orgs__sep" aria-hidden />}
+            <FilterChip active={noEmail} onClick={() => setNoEmail(!noEmail)}>{accountsMode ? 'No email on file' : 'No contact email'}</FilterChip>
             {testCount > 0 && <FilterChip active={showTest} count={testCount} onClick={() => setShowTest(!showTest)}>Show test accounts</FilterChip>}
           </div>
           {!view.emails && <Note>The contact directory is not switched on for this Home (no key configured), so emails are not shown.</Note>}
+          {accountsMode ? (
+          <Section title="Accounts" count={shown.length} aside={<Meta>as of {when(view.asOf)}</Meta>} testId="admin-orgs">
+            {shown.length === 0 ? (
+              <Note>{base.length === 0 ? 'No accounts yet.' : 'No accounts match.'}</Note>
+            ) : (
+              <div className="admin-orgs__scroll">
+                <table className="admin-orgs__table">
+                  <thead><tr><th>Account</th><th>Signs in with</th><th>Email</th></tr></thead>
+                  <tbody>
+                    {shown.map((o) => (
+                      <tr key={o.org} data-testid={`admin-accounts-row-${o.org.slice(2, 10)}`}>
+                        <td><Mono title={o.org}>{short(o.org)}</Mono>{o.test && <> <Meta>test</Meta></>}</td>
+                        <td>{(o.methods ?? []).map((m) => METHOD_WORDS[m] ?? m).join(', ') || '—'}</td>
+                        <td>{o.orgContact ? emailCell(o.org, o.orgContact.email) : <Meta>No email on file</Meta>}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Section>
+          ) : (
           <Section title="Organizations" count={shown.length} aside={<Meta>as of {when(view.asOf)}</Meta>} testId="admin-orgs">
             {shown.length === 0 ? (
               <Note>{base.length === 0 ? 'No organizations from this app yet.' : 'No organizations match.'}</Note>
@@ -346,10 +399,17 @@ export function AdminOrganizations({ session }: { session: Session }) {
               </div>
             )}
           </Section>
+          )}
           <Note>
-            Each organization&rsquo;s contact starts as the email of the person who created it, and changes only when someone who manages it
-            confirms a new address with a code. Below it are the people who manage it, at the email they sign in with; members are counted, not
-            listed.{' '}
+            {accountsMode ? (
+              <>Every GCID account, whatever app it came through, at the email it signs in with. People who sign in only with a passkey, phone or Google have none on file.{' '}</>
+            ) : (
+              <>
+                Each organization&rsquo;s contact starts as the email of the person who created it, and changes only when someone who manages it
+                confirms a new address with a code. Below it are the people who manage it, at the email they sign in with; members are counted, not
+                listed.{' '}
+              </>
+            )}
             {masked
               ? 'Addresses are masked. "Show" reveals one and is recorded; a full export needs a second admin to approve it. Every view, reveal and export is recorded in the operator organization’s vault.'
               : 'Every time this list is opened is recorded with your account and the time.'}

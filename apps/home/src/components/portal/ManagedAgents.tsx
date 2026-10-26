@@ -18,7 +18,7 @@ import { BusyButton } from '../shared/BusyButton';
 import { PrimaryPayee } from './PrimaryPayee';
 import { assignDefaultArchetype } from '../../home/default-archetype';
 import { emitControlEvent } from '../../home/control-plane';
-import { activateVaultIfNeeded, activateInboxDeliveryIfNeeded, activateInteractionsIfNeeded, signHashFor, type Via } from '../../home/onboarding';
+import { activateVaultIfNeeded, activateInboxDeliveryIfNeeded, activateInteractionsIfNeeded, governWorkspace, signHashFor, type Via } from '../../home/onboarding';
 import { setOrgLifecycleStatus } from '../../home/org-lifecycle';
 import { orgStatusOf, STATUS_LABEL, type OrgSurface } from '../../lib/org-lifecycle';
 import type { DelegationWire } from '../../lib/delegation';
@@ -254,11 +254,34 @@ export async function createAgentWithBirthrights(
   onStep: (s: string) => void,
 ): Promise<{ ok: true; result: CreateManagedAgentResult } | { ok: false; error: string }> {
   const { kind, label, parent, person, via } = input;
+  // A WORKSPACE CHARTERED INSIDE AN ORGANIZATION (2026-10-26): stewarded by the PERSON (an organization has no session,
+  // and every steward gate checks the wire against the person), then given storage and its governor — exactly what the
+  // onboarding ceremony does (governWorkspace). Before this, the button made a workspace stewarded by the org itself,
+  // with no storage and no governance records, which no steward check (the operator directory's included) accepts.
+  const governedWs = kind === 'workspace' && parent.toLowerCase() !== person.toLowerCase();
+  let governorRow: ManagedAgent | undefined;
+  if (governedWs) {
+    governorRow = (await listManagedAgents(token, 'any').catch(() => [] as ManagedAgent[])).find((a) => a.agent.toLowerCase() === parent.toLowerCase());
+    if (!governorRow?.stewardshipDelegation) return { ok: false, error: 'You need to manage this organization to charter a workspace inside it.' };
+  }
   const res = await createManagedAgent(
-    { kind, label, parent: parent as `0x${string}`, person: person as `0x${string}`, via },
+    { kind, label, parent: parent as `0x${string}`, person: person as `0x${string}`, via, ...(governedWs ? { steward: person as `0x${string}` } : {}) },
     token, onStep,
   );
   if (!res.ok) return res;
+  if (governedWs) {
+    const wsStewardship = res.result.stewardshipDelegation as DelegationWire | undefined;
+    if (!wsStewardship) return { ok: false, error: `${res.result.name || 'The workspace'} was created without a stewardship grant, so its governor could not be recorded.` };
+    const governed = await governWorkspace({
+      ws: res.result.agent, wsStewardship, governor: parent.toLowerCase() as `0x${string}`,
+      orgStewardship: governorRow!.stewardshipDelegation as DelegationWire,
+      label: res.result.name || label || '', governorName: governorRow!.name || '', purpose: 'workspace',
+      person: person as `0x${string}`, via: via.toLowerCase() as Via, auth: { token }, token,
+      onStep: (_n, line) => onStep(line),
+    });
+    if (!governed.ok) return { ok: false, error: governed.error };
+    invalidateRelatedOrgs();
+  }
   // spec 321 — enable channel storage AT CREATE so the steward never meets the "Enable (steward)"
   // banner: bind the org's vault key + issue its standing delivery grant (channels.data + message
   // bodies + invite tracking) signed AS THE ORG. Zero prompts on the KMS family (C_sub custodies
