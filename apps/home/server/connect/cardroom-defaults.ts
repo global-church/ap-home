@@ -93,6 +93,7 @@ export const onRequestPost = async ({ request, env }: FnContext): Promise<Respon
     const got = await callInteractions(env, person, 'channels.archetypeAssignment.get', { session: token });
     let rec = (got.body.record ?? null) as { type: string; archetypeId: string; archetypeVersion: string; definitionDigest: string; definition: AgentHarnessDefinitionV1 } | null;
     if (!rec?.definition) {
+      if (!SKILLS_REGISTRY_ORIGIN) throw new Error('playbook: this Home has no skills registry');
       const r = await fetch(`${SKILLS_REGISTRY_ORIGIN.replace(/\/$/, '')}/context/contexts/agentic-trust/archetypes/person-steward/definition`, { headers: { 'user-agent': 'Mozilla/5.0 (cardroom-defaults)' } });
       const b = (await r.json().catch(() => ({}))) as { definition?: AgentHarnessDefinitionV1; digest?: string };
       if (!b.definition || !b.digest || !validateAgentHarnessDefinition(b.definition).ok) throw new Error('playbook: the person-steward definition could not be read');

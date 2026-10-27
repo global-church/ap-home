@@ -97,6 +97,7 @@ export async function approvePairing(i: ApproveInput): Promise<{ ok: true; recor
     const contracts: Contracts = { chainId: CHAIN_ID, delegationManager: c.delegationManager!, timestampEnforcer: c.timestampEnforcer!, allowedMethodsEnforcer: c.allowedMethodsEnforcer!, valueEnforcer: c.valueEnforcer!, allowedTargetsEnforcer: c.allowedTargetsEnforcer!, agentRelationship: c.agentRelationship!, agentNameRegistry: c.agentNameRegistry!, permissionlessSubregistry: c.permissionlessSubregistry!, ...(c.digestBindingEnforcer ? { digestBindingEnforcer: c.digestBindingEnforcer } : {}) };
     const wake: RuntimeHostV1 | undefined = i.pairing.claim.wake && typeof i.pairing.claim.wake === 'object' ? (i.pairing.claim.wake as RuntimeHostV1)
       : o.wake === 'container' ? { v: 1, kind: 'container' } : typeof o.wake === 'object' ? { v: 1, kind: 'url', url: o.wake.url } : undefined;
+    if (!SKILLS_REGISTRY_ORIGIN) throw new Error('pairing a runtime needs a skills registry, and this Home has none');
     i.onStep(`Equipping ${o.member} for its key…`);
     const record = await equipRuntimeMember({
       home: window.location.origin, edge: DEMO_EDGE_ORIGIN_DEFAULT, a2a: `https://${A2A_DOMAIN}`, call: { home: window.location.origin, a2a: `${window.location.origin}/a2a` },

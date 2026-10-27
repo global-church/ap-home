@@ -39,7 +39,7 @@ export function typeSlugForCreatedKind(kind: string): string {
 /** The default archetype's CURRENT compiled definition, as the registry serves it now — its id and digest, or null. */
 export async function currentDefaultArchetype(kind: string): Promise<{ archetypeId: string; digest: string } | null> {
   const target = DEFAULT_ARCHETYPE[typeSlugForCreatedKind(kind)];
-  if (!target) return null;
+  if (!target || !SKILLS_REGISTRY_ORIGIN) return null;
   try {
     const r = await fetch(`${SKILLS_REGISTRY_ORIGIN.replace(/\/$/, '')}/context/contexts/${target.context}/archetypes/${target.archetype}/definition`);
     if (!r.ok) return null;
@@ -60,6 +60,7 @@ export async function assignDefaultArchetype(
   const slug = typeSlugForCreatedKind(kind);
   const target = DEFAULT_ARCHETYPE[slug];
   if (!target) return { ok: false, reason: `no default archetype for ${kind}` };
+  if (!SKILLS_REGISTRY_ORIGIN) return { ok: false, reason: 'this Home has no skills registry' };
   try {
     const base = SKILLS_REGISTRY_ORIGIN.replace(/\/$/, '');
     const r = await fetch(`${base}/context/contexts/${target.context}/archetypes/${target.archetype}/definition`);

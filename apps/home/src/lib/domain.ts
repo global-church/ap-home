@@ -172,8 +172,15 @@ export const AGENT_REGISTRY_URN = process.env.NEXT_PUBLIC_AGENT_REGISTRY_URN || 
  *  The Home READS from it — the corpus is where a domain author's SKILL.md contracts live, and reading
  *  them is what makes an edit there change what an agent does here (agent-rules:
  *  one-capability-model-generates-both). Never written to from the Home. */
-export const SKILLS_REGISTRY_ORIGIN =
-  process.env.NEXT_PUBLIC_SKILLS_REGISTRY || 'https://skills-a2a-production.richardpedersen3.workers.dev';
+export const SKILLS_REGISTRY_ORIGIN = skillsRegistryOrigin(process.env.NEXT_PUBLIC_SKILLS_REGISTRY);
+
+/** `off` means this Home uses no skills registry (Global.Church, 2026-10-27: none of its own yet, and it must not
+ *  reach another estate's); every reader then skips or says so. Unset keeps the upstream default. */
+export function skillsRegistryOrigin(raw: string | undefined): string {
+  const v = (raw ?? '').trim();
+  if (v.toLowerCase() === 'off') return '';
+  return v || 'https://skills-a2a-production.richardpedersen3.workers.dev';
+}
 
 /** Which skills CONTEXTS this Home offers archetypes from, in order. `agentic-trust` is the upper (a
  *  treasury is not a domain concept); the white-label domain follows. */

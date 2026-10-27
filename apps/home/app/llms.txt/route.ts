@@ -3,12 +3,13 @@
 // a person's agent, the A2A boundary for an app's own asks, the read-only Developer MCP for release knowledge), the one
 // command that starts an app, and the doctrine it must not violate. Public, static, no session; nothing here is a key.
 import { whitelabel } from '../../src/whitelabel/config';
+import { SKILLS_REGISTRY_ORIGIN } from '../../src/lib/domain';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-static';
 
 const HOME_MCP = process.env.NEXT_PUBLIC_HOME_MCP_ORIGIN || 'https://home-mcp-faithnet.richardpedersen3.workers.dev';
-const SKILLS_REGISTRY = process.env.NEXT_PUBLIC_SKILLS_REGISTRY || 'https://skills-a2a-production.richardpedersen3.workers.dev';
+const SKILLS_REGISTRY = SKILLS_REGISTRY_ORIGIN || '(no skills registry on this Home)';
 
 export function GET(req: Request) {
   const origin = new URL(req.url).origin;

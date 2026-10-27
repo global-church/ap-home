@@ -144,6 +144,7 @@ export interface Composition { definition: AgentHarnessDefinitionV1; digest: str
 /** Ask the registry to compose `base` + `packs`, and refuse anything this Home would not write: a definition that
  *  does not validate, or whose digest is not its own. A composition is whole or it is an error. */
 export async function composePlaybook(base: PackRef, packs: ReadonlyArray<PackRef & { as?: string }>): Promise<Composition> {
+  if (!SKILLS_REGISTRY_ORIGIN) throw new Error('this Home has no skills registry to compose a playbook from');
   const r = await fetch(`${SKILLS_REGISTRY_ORIGIN.replace(/\/$/, '')}/context/compose`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ base: { context: base.context, archetype: base.archetype }, packs: packs.map((p) => ({ context: p.context, archetype: p.archetype, ...(p.as ? { as: p.as } : {}) })) }),
@@ -158,6 +159,7 @@ export async function composePlaybook(base: PackRef, packs: ReadonlyArray<PackRe
 
 /** One part as the registry compiles it NOW — its digest and the tools it carries. Null when it is not served. */
 export async function currentPart(ref: PackRef): Promise<{ digest: string; archetypeId: string; version: string; tools: string[] } | null> {
+  if (!SKILLS_REGISTRY_ORIGIN) return null;
   try {
     const r = await fetch(`${SKILLS_REGISTRY_ORIGIN.replace(/\/$/, '')}/context/contexts/${ref.context}/archetypes/${ref.archetype}/definition`);
     if (!r.ok) return null;
@@ -187,6 +189,7 @@ export async function resolveBase(current: ComposedAssignmentRecord | null, type
   if (!current) return fallback ? { ok: true, base: fallback } : { ok: false, reason: `there is no default playbook for a ${typeSlug} agent to build on` };
   const candidates: PackRef[] = [];
   if (fallback) candidates.push(fallback);
+  if (!SKILLS_REGISTRY_ORIGIN) return { ok: false, reason: 'this Home has no skills registry' };
   const base = SKILLS_REGISTRY_ORIGIN.replace(/\/$/, '');
   for (const context of SKILLS_CONTEXTS) {
     const list = (await fetch(`${base}/context/contexts/${context}/archetypes`).then((r) => (r.ok ? r.json() : null)).catch(() => null)) as { archetypes?: Array<{ id: string }> } | null;

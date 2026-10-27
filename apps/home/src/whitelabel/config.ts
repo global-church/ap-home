@@ -5,6 +5,7 @@
 // new config, not a code change.
 import { A2A_DOMAIN, AGENT_NAME_PARENT, CONNECT_DOMAIN, HOME_MCP_ORIGIN, VAULT_SERVER_ID } from '../lib/domain';
 import type { WhiteLabelConfig } from './schema';
+import { deploymentRelyingApps } from './deployment-apps';
 
 /**
  * The relying origins a deployment adds to a client's registry, newest shape first.
@@ -1317,7 +1318,11 @@ export function isPaymentTemplate(template: string | null | undefined): boolean 
   return template != null && PAYMENT_TEMPLATES.includes(template);
 }
 
-export const whitelabel: WhiteLabelConfig = faithImpact;
+// The deployment names the built-in apps it accepts (deployment-apps.ts); unset keeps them all.
+export const whitelabel: WhiteLabelConfig = {
+  ...faithImpact,
+  relyingApps: deploymentRelyingApps(faithImpact.relyingApps, process.env.NEXT_PUBLIC_RELYING_APPS, process.env.NEXT_PUBLIC_LOCAL_REDIRECTS),
+};
 
 /** Interpolate {name} / {app} (and any {token}) into a copy string. Missing tokens stay literal. */
 export function fmt(template: string, vars: Record<string, string | undefined> = {}): string {

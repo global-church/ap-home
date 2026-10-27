@@ -36,6 +36,7 @@ const j = async (r: Response): Promise<unknown> => (r.ok ? r.json().catch(() => 
 
 /** Every archetype in one context whose compiled definition applies to `agentType`. */
 async function fromContext(context: string, agentType: string): Promise<RegistryArchetype[]> {
+  if (!SKILLS_REGISTRY_ORIGIN) return [];
   const base = SKILLS_REGISTRY_ORIGIN.replace(/\/$/, '');
   const list = (await j(await fetch(`${base}/context/contexts/${context}/archetypes`))) as { archetypes?: ArchetypeRow[] } | null;
   const rows = list?.archetypes ?? [];

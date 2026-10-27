@@ -9,7 +9,10 @@
 // server-side: the uupg tracker, the New City portal, and the hotspot tracker — prod + local dev).
 // Must be an exact origin match — the opener param is validated against this list before we ever
 // post to it.
-const ALLOWED_OPENER_ORIGINS = [
+// `NEXT_PUBLIC_REMOTE_SIGNER_OPENERS`: a comma list replaces these, and `off` turns the demo off (2026-10-27: a deployment that
+// is its own estate does not let another estate's sites drive its wallet ceremony).
+const OPENERS_ENV = (process.env.NEXT_PUBLIC_REMOTE_SIGNER_OPENERS ?? '').trim();
+const DEFAULT_OPENER_ORIGINS = [
   'https://uupg.richardpedersen3.workers.dev',
   'http://127.0.0.1:8797',
   'http://localhost:8797',
@@ -20,6 +23,8 @@ const ALLOWED_OPENER_ORIGINS = [
   'http://127.0.0.1:8799',
   'http://localhost:8799',
 ];
+const ALLOWED_OPENER_ORIGINS: readonly string[] =
+  OPENERS_ENV.toLowerCase() === 'off' ? [] : OPENERS_ENV ? OPENERS_ENV.split(',').map((o) => o.trim()).filter(Boolean) : DEFAULT_OPENER_ORIGINS;
 
 interface Eip1193Request {
   method: string;
