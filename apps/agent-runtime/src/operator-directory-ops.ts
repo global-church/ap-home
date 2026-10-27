@@ -40,6 +40,8 @@ export interface DirectoryCtx {
    *  written sealed; there is no unsealed fallback. */
   seal(account: string, email: string): Promise<string>;
   open(account: string, sealed: string): Promise<string>;
+  /** Every account with a `contact:` record in this directory (the vault's own listing, under the directory grant). */
+  listContacts(grant: Wire): Promise<string[]>;
 }
 
 type Out = { status: number; body: Record<string, unknown> };
@@ -207,7 +209,11 @@ export async function handleDirectoryOp(ctx: DirectoryCtx, op: string, body: Rec
   if (op === 'directory.seal') {
     // One-time migration (2026-10-27): rewrite the records written before sealing, a batch of at most 50 per call, so
     // no email is left in the clear in the vault. The vault keeps no history of a record, so the clear copy is gone.
-    const accounts = Array.isArray(body.accounts) ? [...new Set(body.accounts.filter(isAccount).map((a) => a.toLowerCase()))].slice(0, 50) : [];
+    // Walks the directory's OWN records (the vault's listing), so an imported record for an account the Home no
+    // longer lists is sealed too. Fifty per call, resumable from `next`.
+    const all = (await ctx.listContacts(grant)).filter(isAccount).map((a) => a.toLowerCase()).sort();
+    const offset = Math.max(0, Math.floor(Number(body.offset ?? 0)) || 0);
+    const accounts = all.slice(offset, offset + 50);
     const found = await chunkedRead(ctx, grant, accounts);
     let n = 0;
     for (const [a, c] of found) {
@@ -216,7 +222,7 @@ export async function handleDirectoryOp(ctx: DirectoryCtx, op: string, body: Rec
       n++;
     }
     await audit(ctx, grant, { by: sa, kind: 'seal', accounts: n });
-    return ok({ sealed: n, checked: found.size });
+    return ok({ sealed: n, checked: found.size, total: all.length, ...(offset + 50 < all.length ? { next: offset + 50 } : {}) });
   }
 
   // ── Exports ──

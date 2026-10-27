@@ -225,9 +225,9 @@ export function AdminOrganizations({ session }: { session: Session }) {
       sealed += r.sealed;
       total = r.total;
       offset = r.next;
-      setNote(`Sealing… ${sealed} records re-written so far (${total} accounts and organizations to check).`);
+      setNote(`Sealing… ${sealed} records re-written so far, of ${total} in the directory.`);
     }
-    setNote(`Sealed ${sealed} records. Every contact in the directory is now encrypted with the directory's own key.`);
+    setNote(`Sealed ${sealed} more records. All ${total} contacts in the directory are encrypted with its own key.`);
     void loadSide();
   });
 

@@ -283,21 +283,20 @@ export const onAdminDirectory = async ({ request, env }: FnContext): Promise<Res
     return json({ ok: true, imported, found: records.length, ...(i < records.length ? { next: i } : {}) });
   }
   if (op === 'directory.seal') {
-    // One-time (2026-10-27): every account and organization this Home knows, fifty at a time, so the DO can re-write
-    // any record written before sealing. Resumable from `next`, like the import.
-    const kv = env.AUTH_CODES;
-    const people = listAccounts(await readAll(kv, (await Promise.all(FACET_PREFIXES.map((p) => listKeys(kv, p)))).flat())).map((p) => p.account);
-    const orgs = (await listKeys(kv, 'related:')).map((k) => k.split(':')[2]?.toLowerCase() ?? '').filter((a) => /^0x[0-9a-f]{40}$/.test(a));
-    const accounts = [...new Set([...people, ...orgs])].sort();
+    // One-time (2026-10-27): the DO walks the directory's own records, fifty per call; loop for at most ~40 s, then
+    // the page calls again from `next`, like the import.
     const started = Date.now();
     let sealed = 0;
-    let i = Math.max(0, Number(body.offset ?? 0) || 0);
-    for (; i < accounts.length && Date.now() - started < 40_000; i += 50) {
-      const r = await directoryOp(env, op, { session: g.token, stewardship, accounts: accounts.slice(i, i + 50) });
-      if (r.status !== 200) return json({ ok: false, error: String(r.body.error ?? `the directory answered ${r.status}`), sealed, total: accounts.length }, r.status);
+    let total = 0;
+    let next: number | undefined = Math.max(0, Number(body.offset ?? 0) || 0);
+    while (next !== undefined && Date.now() - started < 40_000) {
+      const r = await directoryOp(env, op, { session: g.token, stewardship, offset: next });
+      if (r.status !== 200) return json({ ok: false, error: String(r.body.error ?? `the directory answered ${r.status}`), sealed, total }, r.status);
       sealed += Number(r.body.sealed ?? 0);
+      total = Number(r.body.total ?? 0);
+      next = typeof r.body.next === 'number' ? r.body.next : undefined;
     }
-    return json({ ok: true, sealed, total: accounts.length, ...(i < accounts.length ? { next: i } : {}) });
+    return json({ ok: true, sealed, total, ...(next !== undefined ? { next } : {}) });
   }
   const r = await directoryOp(env, op, { ...rest, session: g.token, stewardship });
   return json(r.body, r.status);

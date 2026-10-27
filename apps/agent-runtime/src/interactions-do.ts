@@ -2068,6 +2068,8 @@ export class InteractionsDO {
         return next;
       },
       seal: (account, email) => this.sealerFor(principal).seal(account, email),
+      listContacts: async (g) =>
+        (await this.vaultFor(g as unknown as IncomingDelegation).list('' as never)).map((r) => r.resource).filter((r) => r.startsWith('contact:')).map((r) => r.slice('contact:'.length)),
       open: (account, sealed) => this.sealerFor(principal).open(account, sealed),
     };
   }

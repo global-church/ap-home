@@ -38,6 +38,7 @@ function harness() {
     serial: (_k, w) => w(),
     // A fake seal: reversible, bound to the account, and never the plain email.
     async seal(account, email) { return 's1.' + btoa(`${account}|${email}`); },
+    async listContacts() { return [...vault.keys()].filter((k) => k.startsWith('contact:')).map((k) => k.slice('contact:'.length)); },
     async open(account, sealed) { const [a, e] = atob(sealed.slice(3)).split('|'); if (a !== account) throw new Error('bound to another record'); return e!; },
   };
   return { ctx, vault, enable: () => { grant = DIRECTORY_GRANT; }, tick: (ms: number) => { t += ms; }, whileReading: (fn: () => Promise<void>) => { duringRead = fn; } };
@@ -184,8 +185,11 @@ describe('sealed at the data layer (2026-10-27)', () => {
     h.vault.set(`contact:${HOST}`, { v: 2, email: 'pastor@grace.org', verifiedAt: 5, source: `org-default:${RYAN}` });
     expect((await call(h, 'directory.reveal', { ...as(RYAN), account: HOST })).body).toMatchObject({ email: 'pastor@grace.org' });
     expect((await call(h, 'directory.masked', { ...as(RYAN), accounts: [HOST] })).body.contacts).toMatchObject({ [HOST]: { masked: 'pa•••r@g•••.org', source: 'org-default' } });
-    const r = await call(h, 'directory.seal', { ...as(RYAN), accounts: [HOST, CHURCH] });
-    expect(r.body).toMatchObject({ sealed: 1, checked: 1 });
+    // No accounts are passed: it walks the directory's own records, so a record for an account the Home no longer
+    // lists is sealed too.
+    const r = await call(h, 'directory.seal', { ...as(RYAN) });
+    expect(r.body).toMatchObject({ sealed: 1, checked: 1, total: 1 });
+    expect(r.body.next).toBeUndefined();
     expect(h.vault.get(`contact:${HOST}`)).toMatchObject({ v: 3, source: 'org-default', verifiedAt: 5 });
     expect(vaultText()).not.toContain('pastor@grace.org');
     expect(vaultText()).not.toContain('org-default:'); // the old source's address went with it
