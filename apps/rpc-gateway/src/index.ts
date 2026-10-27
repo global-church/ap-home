@@ -1,6 +1,6 @@
 // Chain RPC gateway: token auth → method allow-list → gas-cap inject → per-app rate limit → read cache →
 // forward to the private origin. Generic over the chain; every hostname lives in wrangler.toml [env.*].
-import { isAllowed, isWrite, CACHE_TTL_S, injectEstimateGasCap, type Rpc } from './config';
+import { isAllowed, isWrite, CACHE_TTL_S, injectEstimateGasCap, browserRefusal, stripBlockTransactions, type Rpc } from './config';
 export { RateLimiter } from './ratelimit';
 // ORIGIN_CLIENT_ID / ORIGIN_CLIENT_SECRET are secrets (`wrangler secret put`), never vars. They are what
 // this gateway presents TO its origin. TOKENS answers "may this caller use the chain"; this pair answers
@@ -15,6 +15,16 @@ const err = (id: unknown, code: number, message: string, status = 200) =>
 /** How long a colo may reuse a token record it read from KV. Also the bound on how long a REVOKED token
  *  keeps working at a colo that had just read it (approved by Global.Church, 2026-10-07). */
 export const TOKEN_CACHE_TTL_S = 60;
+/** A browser token's block answers lose their transaction lists (config.ts, stripBlockTransactions). Single or batch. */
+async function stripBlocks(res: Response, methods: Map<unknown, string>): Promise<Response> {
+  const text = await res.text();
+  let j: unknown;
+  try { j = JSON.parse(text); } catch { return new Response(text, { status: res.status, headers: res.headers }); }
+  const one = (r: { id?: unknown; result?: unknown }) => ('result' in r ? { ...r, result: stripBlockTransactions(methods.get(r.id) ?? '', r.result) } : r);
+  const out = Array.isArray(j) ? j.map(one) : one(j as { id?: unknown; result?: unknown });
+  const h = new Headers(res.headers); h.delete('content-length');
+  return new Response(JSON.stringify(out), { status: res.status, headers: h });
+}
 const sha256 = async (s: string) => [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)))].map(b => b.toString(16).padStart(2, '0')).join('');
 // Cloudflare Access service-token header names — also ordinary headers, so an origin fronted some other
 // way (nginx, say) can check the same pair without Access being involved.
@@ -48,6 +58,8 @@ export default {
     };
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
 
+    // Set by run() once the token is known: whether to strip block transaction lists, and for which call ids.
+    const browserScoped: { value: boolean; methods: Map<unknown, string> } = { value: false, methods: new Map() };
     const run = async (): Promise<Response> => {
       if (req.method !== 'POST') return new Response('POST JSON-RPC only', { status: 405 });
       if (!env.ORIGIN) return err(null, -32603, 'gateway misconfigured: ORIGIN unset', 500);
@@ -59,13 +71,20 @@ export default {
       if (!bearer) return err(null, -32001, 'missing app token', 401);
       // cacheTtl: an uncached KV read at the caller's colo is a cross-region trip on EVERY call, and a flow makes
       // 10–30 sequential calls (measured 2026-10-07). See TOKEN_CACHE_TTL_S for what it costs revocation.
-      const rec = await env.TOKENS.get(`t:${await sha256(bearer)}`, { type: 'json', cacheTtl: TOKEN_CACHE_TTL_S }) as { app: string; readRps: number; writeRps: number } | null;
+      const rec = await env.TOKENS.get(`t:${await sha256(bearer)}`, { type: 'json', cacheTtl: TOKEN_CACHE_TTL_S }) as { app: string; readRps: number; writeRps: number; scope?: 'browser' } | null;
       if (!rec) return err(null, -32001, 'unknown or revoked app token', 401);
       let body: Rpc | Rpc[]; try { body = await req.json(); } catch { return err(null, -32700, 'parse error'); }
       const calls = Array.isArray(body) ? body : [body];
       injectEstimateGasCap(calls, env.ESTIMATE_GAS_CAP);
       if (calls.length === 0 || calls.length > 50) return err(null, -32600, 'empty or oversized batch');
       for (const c of calls) if (typeof c?.method !== 'string' || !isAllowed(c.method)) return err(c?.id ?? null, -32601, `method not permitted: ${c?.method}`, 403);
+      // A token baked into a web page reads what it can name, never lists the chain (config.ts, browserRefusal).
+      const browser = rec.scope === 'browser';
+      if (browser) for (const c of calls) { const why = browserRefusal(c); if (why) return err(c.id ?? null, -32601, why, 403); }
+      if (browser && calls.some((c) => c.method === 'eth_getBlockByNumber' || c.method === 'eth_getBlockByHash')) {
+        browserScoped.value = true;
+        for (const c of calls) browserScoped.methods.set(c.id, c.method);
+      }
       const reads = calls.filter(c => !isWrite(c.method)).length, writes = calls.length - reads;
       const take = () => {
         const rl = env.RATE.get(env.RATE.idFromName(rec.app));
@@ -94,7 +113,7 @@ export default {
       return forward(env, body);
     };
 
-    const res = await run();
+    const res = await run().then((r) => (browserScoped.value ? stripBlocks(r, browserScoped.methods) : r));
     const h = new Headers(res.headers);
     for (const [k, v] of Object.entries(cors)) h.set(k, v);
     return new Response(res.body, { status: res.status, headers: h });
