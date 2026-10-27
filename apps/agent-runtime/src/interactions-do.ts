@@ -99,6 +99,9 @@ import type { CoordinationEventV1 } from '@agenticprimitives/coordination';
 import { ERC1271_MAGIC_VALUE as ERC1271_MAGIC } from '@agenticprimitives/types';
 import { vaultServerId } from './vault-server-id.js';
 import { DIRECTORY_OPS, handleDirectoryOp, type DirectoryCtx, type Wire as DirectoryWire } from './operator-directory-ops.js';
+import { makeSealer, SEAL_PURPOSE, type Sealer, type StoredDek } from './directory-seal.js';
+import { RemoteAgenticKmsProvider } from '@agenticprimitives/key-custody/agentic';
+import { agenticKmsConfig } from './akcs.js';
 
 const ERC1271_ABI = [{ type: 'function', name: 'isValidSignature', stateMutability: 'view', inputs: [{ name: 'hash', type: 'bytes32' }, { name: 'signature', type: 'bytes' }], outputs: [{ type: 'bytes4' }] }] as const;
 const IS_REVOKED_ABI = [{ type: 'function', name: 'isRevoked', stateMutability: 'view', inputs: [{ name: 'delegationHash', type: 'bytes32' }], outputs: [{ name: 'revoked', type: 'bool' }] }] as const;
@@ -1993,6 +1996,30 @@ export class InteractionsDO {
 
   /** One-at-a-time queues for the directory's shared records (the audit log, the export list). */
   private readonly directoryQueues = new Map<string, Promise<unknown>>();
+  private directorySealer: Sealer | null = null;
+
+  /** The directory's sealer (directory-seal.ts): AKCS envelope purpose `operator-directory`, the wrapped data key in
+   *  THIS object's storage (no vault grant reaches it). No AKCS config Ò every seal/open throws: never written unsealed. */
+  private sealerFor(principal: string): Sealer {
+    if (this.directorySealer) return this.directorySealer;
+    const kms = new RemoteAgenticKmsProvider(agenticKmsConfig(this.env as never, { envelopePurpose: SEAL_PURPOSE }));
+    this.directorySealer = makeSealer({
+      workspace: principal,
+      store: {
+        get: async () => (await this.state.storage.get<StoredDek>('directory.dek')) ?? undefined,
+        put: async (d) => { await this.state.storage.put('directory.dek', d); },
+      },
+      envelope: {
+        generate: async (aadContext) => {
+          const g = await kms.generateSessionDataKey({ aadContext });
+          return { plaintext: g.plaintextDataKey, wrapped: g.encryptedDataKey, keyId: g.keyId, keyVersion: g.keyVersion };
+        },
+        unwrap: async (d, aadContext) =>
+          kms.decryptSessionDataKey({ encryptedDataKey: d.wrapped, keyId: d.keyId, keyVersion: d.keyVersion, aadContext } as never),
+      },
+    });
+    return this.directorySealer;
+  }
 
   /** What operator-directory-ops.ts needs from this object: identity, on-chain checks, and the vault. */
   private directoryCtx(principal: string): DirectoryCtx {
@@ -2040,6 +2067,8 @@ export class InteractionsDO {
         this.directoryQueues.set(key, next.catch(() => undefined));
         return next;
       },
+      seal: (account, email) => this.sealerFor(principal).seal(account, email),
+      open: (account, sealed) => this.sealerFor(principal).open(account, sealed),
     };
   }
 

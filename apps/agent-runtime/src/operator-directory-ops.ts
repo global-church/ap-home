@@ -8,8 +8,8 @@
 //   everything else                  a session + THIS operator org's stewardship grant (an admin)
 import {
   appendAudit, AUDIT_LOG, canApprove, canDeny, canFetch, cleanEmail, contactKey, DIRECTORY_SCOPE, EXPORTS_DOC,
-  exportSummary, isAccount, keepExports, maskEmail, newExportRequest, readContact, sessionProvesEmail,
-  type AuditEntry, type ContactRecord, type ExportRequest,
+  exportSummary, isAccount, keepExports, maskEmail, newExportRequest, readContact, sessionProvesEmail, sourceKind,
+  type AuditEntry, type ContactRecord, type ExportRequest, type SealedContact,
 } from './operator-directory.js';
 
 export interface Wire { delegator: string; delegate: string; signature?: string; caveats: { enforcer: string; terms: string; args?: string }[]; salt: string | number | bigint; authority?: string }
@@ -36,6 +36,10 @@ export interface DirectoryCtx {
   write(grant: Wire, resource: string, data: unknown): Promise<void>;
   /** Run read-modify-write work on a shared record one at a time. */
   serial<T>(key: string, work: () => Promise<T>): Promise<T>;
+  /** Encrypt / decrypt one account's email under the directory's data key (directory-seal.ts). A record is only ever
+   *  written sealed; there is no unsealed fallback. */
+  seal(account: string, email: string): Promise<string>;
+  open(account: string, sealed: string): Promise<string>;
 }
 
 type Out = { status: number; body: Record<string, unknown> };
@@ -44,7 +48,7 @@ const no = (status: number, error: string): Out => ({ status, body: { ok: false,
 
 export const DIRECTORY_OPS = new Set([
   'directory.enable', 'directory.record', 'directory.defaultOrg', 'directory.recordOrg', 'directory.masked',
-  'directory.reveal', 'directory.audit', 'directory.import', 'directory.oldRemoved', 'export.request', 'export.list', 'export.approve',
+  'directory.reveal', 'directory.audit', 'directory.import', 'directory.oldRemoved', 'directory.seal', 'export.request', 'export.list', 'export.approve',
   'export.deny', 'export.fetch',
 ]);
 
@@ -72,6 +76,15 @@ async function chunkedRead(ctx: DirectoryCtx, grant: Wire, accounts: string[]): 
   return out;
 }
 
+/** The record a contact is written as: sealed, with its masked form beside it. */
+async function sealedContact(ctx: DirectoryCtx, account: string, email: string, verifiedAt: number, source: string): Promise<SealedContact> {
+  return { v: 3, sealed: await ctx.seal(account, email), masked: maskEmail(email), verifiedAt, source };
+}
+/** The email a record holds: opened when sealed, as written when it predates sealing. */
+const emailOf = (ctx: DirectoryCtx, account: string, c: ContactRecord): Promise<string> =>
+  c.v === 2 ? Promise.resolve(c.email) : ctx.open(account, c.sealed);
+const maskedOf = (c: ContactRecord): string => (c.v === 2 ? maskEmail(c.email) : c.masked);
+
 async function audit(ctx: DirectoryCtx, grant: Wire, entry: Omit<AuditEntry, 'at'>): Promise<void> {
   await ctx.serial(AUDIT_LOG, async () => {
     const log = (await ctx.read(grant, AUDIT_LOG)) as AuditEntry[] | null;
@@ -92,7 +105,7 @@ export async function handleDirectoryOp(ctx: DirectoryCtx, op: string, body: Rec
     if (!(await sessionProvesEmail(who.principal, email))) return no(403, 'this session did not sign in with that email');
     const grant = await ctx.getGrant();
     if (!grant) return no(409, 'the operator directory is not enabled');
-    await ctx.write(grant, contactKey(sa), { v: 2, email, verifiedAt: ctx.now(), source: 'email-sign-in' } satisfies ContactRecord);
+    await ctx.write(grant, contactKey(sa), await sealedContact(ctx, sa, email, ctx.now(), 'email-sign-in'));
     return ok();
   }
   if (op === 'directory.defaultOrg' || op === 'directory.recordOrg') {
@@ -110,7 +123,9 @@ export async function handleDirectoryOp(ctx: DirectoryCtx, op: string, body: Rec
       // The session must prove the address (#5): GCID mints one only after the code sent to it was entered, so a
       // steward calling here directly cannot skip the code.
       if (!(await sessionProvesEmail(who.principal, email))) return no(403, 'this address has not been verified with a code');
-      await ctx.write(grant, contactKey(org), { v: 2, email, verifiedAt: ctx.now(), source: `org-verified:${sa}` } satisfies ContactRecord);
+      await ctx.write(grant, contactKey(org), await sealedContact(ctx, org, email, ctx.now(), 'org-verified'));
+      // Who set it is recorded here, not on the record (Paul, 2026-10-27: the record carries no address).
+      await audit(ctx, grant, { by: sa, kind: 'org-contact', account: org, note: 'verified' });
       return ok();
     }
     // The creator's own verified address, copied; never supplied by the caller, never over an existing contact.
@@ -118,7 +133,8 @@ export async function handleDirectoryOp(ctx: DirectoryCtx, op: string, body: Rec
     if (readContact(existing)) return ok({ recorded: false, reason: 'the organization already has a contact' });
     const me = readContact(mine);
     if (!me) return ok({ recorded: false, reason: 'no verified email on file for you yet' });
-    await ctx.write(grant, contactKey(org), { v: 2, email: me.email, verifiedAt: ctx.now(), source: `org-default:${sa}` } satisfies ContactRecord);
+    await ctx.write(grant, contactKey(org), await sealedContact(ctx, org, await emailOf(ctx, sa, me), ctx.now(), 'org-default'));
+    await audit(ctx, grant, { by: sa, kind: 'org-contact', account: org, note: 'default' });
     return ok({ recorded: true });
   }
 
@@ -148,7 +164,7 @@ export async function handleDirectoryOp(ctx: DirectoryCtx, op: string, body: Rec
     const found = await chunkedRead(ctx, grant, accounts);
     await audit(ctx, grant, { by: sa, kind: 'list', accounts: found.size });
     const contacts: Record<string, { masked: string; verifiedAt: number; source: string }> = {};
-    for (const [a, c] of found) contacts[a] = { masked: maskEmail(c.email), verifiedAt: c.verifiedAt, source: c.source.split(':')[0] ?? '' };
+    for (const [a, c] of found) contacts[a] = { masked: maskedOf(c), verifiedAt: c.verifiedAt, source: sourceKind(c.source) };
     return ok({ contacts });
   }
   if (op === 'directory.reveal') {
@@ -157,7 +173,7 @@ export async function handleDirectoryOp(ctx: DirectoryCtx, op: string, body: Rec
     const c = readContact(await ctx.read(grant, contactKey(account)));
     // Recorded BEFORE the address is returned: a reveal that is not in the log does not happen.
     await audit(ctx, grant, { by: sa, kind: 'reveal', account });
-    return ok({ email: c?.email ?? null, verifiedAt: c?.verifiedAt ?? null });
+    return ok({ email: c ? await emailOf(ctx, account, c) : null, verifiedAt: c?.verifiedAt ?? null });
   }
   if (op === 'directory.audit') {
     const log = ((await ctx.read(grant, AUDIT_LOG)) as AuditEntry[] | null) ?? [];
@@ -182,11 +198,25 @@ export async function handleDirectoryOp(ctx: DirectoryCtx, op: string, body: Rec
       const email = cleanEmail(r.email);
       if (!isAccount(account) || !email || have.has(account)) continue;
       const at = typeof r.verifiedAt === 'number' ? r.verifiedAt : ctx.now();
-      await ctx.write(grant, contactKey(account), { v: 2, email, verifiedAt: at, source: `import:${String(r.source ?? 'kv').slice(0, 60)}` } satisfies ContactRecord);
+      await ctx.write(grant, contactKey(account), await sealedContact(ctx, account, email, at, 'import'));
       n++;
     }
     await audit(ctx, grant, { by: sa, kind: 'import', accounts: n });
     return ok({ imported: n });
+  }
+  if (op === 'directory.seal') {
+    // One-time migration (2026-10-27): rewrite the records written before sealing, a batch of at most 50 per call, so
+    // no email is left in the clear in the vault. The vault keeps no history of a record, so the clear copy is gone.
+    const accounts = Array.isArray(body.accounts) ? [...new Set(body.accounts.filter(isAccount).map((a) => a.toLowerCase()))].slice(0, 50) : [];
+    const found = await chunkedRead(ctx, grant, accounts);
+    let n = 0;
+    for (const [a, c] of found) {
+      if (c.v !== 2) continue;
+      await ctx.write(grant, contactKey(a), await sealedContact(ctx, a, c.email, c.verifiedAt, sourceKind(c.source)));
+      n++;
+    }
+    await audit(ctx, grant, { by: sa, kind: 'seal', accounts: n });
+    return ok({ sealed: n, checked: found.size });
   }
 
   // ── Exports ──
@@ -229,6 +259,9 @@ export async function handleDirectoryOp(ctx: DirectoryCtx, op: string, body: Rec
       return ok({ request: exportSummary(r, ctx.now()) });
     }
     const found = await chunkedRead(ctx, grant, r.accounts);
+    // Opened BEFORE the export is marked downloaded, so a key-service failure leaves it downloadable rather than spent.
+    const emails = new Map<string, string>();
+    for (const [a, c] of found) emails.set(a, await emailOf(ctx, a, c));
     // Mark it downloaded and record it BEFORE any address is returned; if either write fails, nothing leaves.
     let raced = false;
     await ctx.serial(EXPORTS_DOC, async () => {
@@ -241,7 +274,7 @@ export async function handleDirectoryOp(ctx: DirectoryCtx, op: string, body: Rec
     });
     if (raced) return no(403, 'this export is no longer available to download');
     await audit(ctx, grant, { by: sa, kind: 'export-fetch', exportId: r.id, accounts: found.size });
-    const rows = r.accounts.map((a) => ({ account: a, email: found.get(a)?.email ?? null, verifiedAt: found.get(a)?.verifiedAt ?? null }));
+    const rows = r.accounts.map((a) => ({ account: a, email: emails.get(a) ?? null, verifiedAt: found.get(a)?.verifiedAt ?? null }));
     return ok({ app: r.app, approvedBy: r.approvedBy, rows });
   }
   return no(404, `unknown op ${op}`);

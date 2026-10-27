@@ -108,7 +108,7 @@ describe('All accounts (2026-10-26)', () => {
 
 describe('directory actions', () => {
   it('refuse a non-admin before reaching the directory', async () => {
-    for (const action of ['reveal', 'export-request', 'export-approve', 'export-fetch', 'audit', 'import', 'remove-old']) {
+    for (const action of ['reveal', 'export-request', 'export-approve', 'export-fetch', 'audit', 'import', 'remove-old', 'seal']) {
       const r = await onAdminDirectory({ request: req('/connect/admin/directory', `tok:${MALLORY}`, { action, account: HOST, id: 'x' }), env });
       expect(r.status, action).toBe(403);
     }

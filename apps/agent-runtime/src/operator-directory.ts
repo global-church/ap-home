@@ -33,7 +33,8 @@ export const cleanEmail = (e: unknown): string | null => {
   return EMAIL.test(s) && s.length <= 254 ? s : null;
 };
 
-export interface ContactRecord {
+/** A contact as first written (2026-10-23): the email in the clear inside the vault record. Read until sealed. */
+export interface PlainContact {
   v: 2;
   email: string;
   verifiedAt: number;
@@ -41,11 +42,31 @@ export interface ContactRecord {
   source: string;
 }
 
-export function readContact(raw: unknown): ContactRecord | null {
-  const r = raw as Partial<ContactRecord> | null;
-  if (!r || r.v !== 2 || typeof r.email !== 'string' || typeof r.verifiedAt !== 'number') return null;
-  return { v: 2, email: r.email, verifiedAt: r.verifiedAt, source: typeof r.source === 'string' ? r.source : '' };
+/** A sealed contact (2026-10-27, directory-seal.ts): the email encrypted under the directory's data key; the masked
+ *  form in the clear so the masked list needs no decryption. `source` carries no address (who set an org's contact is
+ *  in the audit log). */
+export interface SealedContact {
+  v: 3;
+  sealed: string;
+  masked: string;
+  verifiedAt: number;
+  /** 'email-sign-in' | 'org-default' | 'org-verified' | 'import' */
+  source: string;
 }
+
+export type ContactRecord = PlainContact | SealedContact;
+
+export function readContact(raw: unknown): ContactRecord | null {
+  const r = raw as { v?: unknown; email?: unknown; sealed?: unknown; masked?: unknown; verifiedAt?: unknown; source?: unknown } | null;
+  if (!r || typeof r.verifiedAt !== 'number') return null;
+  const source = typeof r.source === 'string' ? r.source : '';
+  if (r.v === 3 && typeof r.sealed === 'string' && typeof r.masked === 'string') return { v: 3, sealed: r.sealed, masked: r.masked, verifiedAt: r.verifiedAt, source };
+  if (r.v === 2 && typeof r.email === 'string') return { v: 2, email: r.email, verifiedAt: r.verifiedAt, source };
+  return null;
+}
+
+/** The source as the Admin list shows it: its kind only, never an address (a v2 source carried the setter's). */
+export const sourceKind = (source: string): string => source.split(':')[0] ?? '';
 
 /** "pastor@grace.org" -> "pa•••r@g•••.org". Enough to recognise, not enough to use. */
 export function maskEmail(email: string): string {
@@ -73,7 +94,7 @@ export async function sessionProvesEmail(principal: { kind: string; id: string }
 
 // ── Audit ───────────────────────────────────────────────────────────────────────────────────────────────────────
 
-export type AuditKind = 'list' | 'reveal' | 'export-request' | 'export-approve' | 'export-fetch' | 'export-deny' | 'import' | 'enable' | 'old-removed';
+export type AuditKind = 'list' | 'reveal' | 'export-request' | 'export-approve' | 'export-fetch' | 'export-deny' | 'import' | 'enable' | 'old-removed' | 'seal' | 'org-contact';
 export interface AuditEntry { at: number; by: string; kind: AuditKind; accounts?: number; account?: string; exportId?: string; note?: string }
 
 /** Bounded, but list views are dropped first (security review 2026-10-23, #3): opening the masked list again and

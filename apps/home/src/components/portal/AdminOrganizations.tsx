@@ -76,7 +76,7 @@ interface AuditEntry { at: number; by: string; kind: string; accounts?: number; 
 
 const AUDIT_WORDS: Record<string, string> = {
   list: 'opened the list', reveal: 'showed one address', 'export-request': 'requested an export', 'export-approve': 'approved an export',
-  'export-deny': 'denied an export', 'export-fetch': 'downloaded an export', import: 'imported the old directory', enable: 'enabled the directory', 'old-removed': 'removed the old directory',
+  'export-deny': 'denied an export', 'export-fetch': 'downloaded an export', import: 'imported the old directory', enable: 'enabled the directory', 'old-removed': 'removed the old directory', seal: 'sealed the directory', 'org-contact': 'set an organization contact',
 };
 
 export function AdminOrganizations({ session }: { session: Session }) {
@@ -214,6 +214,21 @@ export function AdminOrganizations({ session }: { session: Session }) {
     await directory('enable', { delegation: { ...delegation, salt: delegation.salt.toString() } });
     setNote('The operator directory is enabled.');
     await load();
+  });
+
+  const sealAll = () => run(async () => {
+    let sealed = 0;
+    let total = 0;
+    let offset: number | undefined = 0;
+    while (offset !== undefined) {
+      const r: { sealed: number; total: number; next?: number } = await directory('seal', { offset });
+      sealed += r.sealed;
+      total = r.total;
+      offset = r.next;
+      setNote(`Sealing… ${sealed} records re-written so far (${total} accounts and organizations to check).`);
+    }
+    setNote(`Sealed ${sealed} records. Every contact in the directory is now encrypted with the directory's own key.`);
+    void loadSide();
   });
 
   const removeOld = () => run(async () => {
@@ -434,6 +449,7 @@ export function AdminOrganizations({ session }: { session: Session }) {
             <Note>
               Moving from the old directory? <button type="button" className="admin-orgs__reveal" onClick={() => void importOld()} data-testid="admin-orgs-import">Import the old directory</button> (once; addresses already in the operator directory are kept).
               {' '}After the import: <button type="button" className="admin-orgs__reveal" onClick={() => void removeOld()} data-testid="admin-orgs-remove-old">Remove the old directory</button> (deletes its leftover encrypted records; recorded).
+              {' '}Once: <button type="button" className="admin-orgs__reveal" onClick={() => void sealAll()} data-testid="admin-orgs-seal">Seal the directory</button> (encrypts records written before sealing; recorded).
             </Note>
           )}
           {!masked && view.views.length > 0 && (

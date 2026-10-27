@@ -36,6 +36,9 @@ function harness() {
     async readMany(_g, rs) { const hook = duringRead; duringRead = null; if (hook) await hook(); return Object.fromEntries(rs.map((r) => [r, vault.get(r) ?? null])); },
     async write(_g, r, d) { vault.set(r, d); },
     serial: (_k, w) => w(),
+    // A fake seal: reversible, bound to the account, and never the plain email.
+    async seal(account, email) { return 's1.' + btoa(`${account}|${email}`); },
+    async open(account, sealed) { const [a, e] = atob(sealed.slice(3)).split('|'); if (a !== account) throw new Error('bound to another record'); return e!; },
   };
   return { ctx, vault, enable: () => { grant = DIRECTORY_GRANT; }, tick: (ms: number) => { t += ms; }, whileReading: (fn: () => Promise<void>) => { duringRead = fn; } };
 }
@@ -50,7 +53,8 @@ beforeEach(() => { h = harness(); h.enable(); });
 describe('recording a person’s email', () => {
   it('records the address their own session signed in with', async () => {
     expect((await call(h, 'directory.record', { session: `session:${HOST}:pastor@grace.org`, email: 'Pastor@Grace.org' })).status).toBe(200);
-    expect(h.vault.get(`contact:${HOST}`)).toMatchObject({ email: 'pastor@grace.org', source: 'email-sign-in' });
+    expect(h.vault.get(`contact:${HOST}`)).toMatchObject({ v: 3, masked: 'pa•••r@g•••.org', source: 'email-sign-in' });
+    expect(JSON.stringify(h.vault.get(`contact:${HOST}`))).not.toContain('pastor@grace.org');
   });
   it('refuses any other address, and a session that did not sign in by email', async () => {
     expect((await call(h, 'directory.record', { session: `session:${HOST}:pastor@grace.org`, email: 'boss@grace.org' })).status).toBe(403);
@@ -65,10 +69,13 @@ describe('an organization’s contact', () => {
     await call(h, 'directory.record', { session: `session:${HOST}:pastor@grace.org`, email: 'pastor@grace.org' });
     const r = await call(h, 'directory.defaultOrg', { ...as(HOST, 'pastor@grace.org', CHURCH), org: CHURCH });
     expect(r.body).toMatchObject({ ok: true, recorded: true });
-    expect(h.vault.get(`contact:${CHURCH}`)).toMatchObject({ email: 'pastor@grace.org', source: `org-default:${HOST}` });
+    expect(h.vault.get(`contact:${CHURCH}`)).toMatchObject({ v: 3, masked: 'pa•••r@g•••.org', source: 'org-default' });
+    // Who set it is in the audit log, not on the record (it carries no address).
+    expect(JSON.stringify(h.vault.get(`contact:${CHURCH}`))).not.toContain(HOST);
+    expect(audit(h).at(-1)).toMatchObject({ kind: 'org-contact', by: HOST });
     await call(h, 'directory.recordOrg', { ...as(HOST, 'office@grace.org', CHURCH), org: CHURCH, email: 'office@grace.org' });
     expect((await call(h, 'directory.defaultOrg', { ...as(HOST, '-', CHURCH), org: CHURCH })).body).toMatchObject({ recorded: false });
-    expect(h.vault.get(`contact:${CHURCH}`)).toMatchObject({ email: 'office@grace.org' });
+    expect(h.vault.get(`contact:${CHURCH}`)).toMatchObject({ masked: 'of•••e@g•••.org', source: 'org-verified' });
   });
   it('only someone who manages the org may set it', async () => {
     expect((await call(h, 'directory.recordOrg', { ...as(MALLORY, 'evil@x.org', CHURCH), org: CHURCH, email: 'evil@x.org' })).status).toBe(403);
@@ -156,6 +163,37 @@ describe('two-admin export, end to end', () => {
     await call(h, 'export.request', { ...as(RYAN), app: 'gather-app', accounts: [HOST] });
     const list = await call(h, 'export.list', as(PAUL));
     expect(JSON.stringify(list.body)).not.toContain(HOST);
+  });
+});
+
+describe('sealed at the data layer (2026-10-27)', () => {
+  const vaultText = () => JSON.stringify([...h.vault.entries()]);
+  it('after recording, importing and exporting, no email is in the clear anywhere in the vault', async () => {
+    await call(h, 'directory.record', { session: `session:${HOST}:pastor@grace.org`, email: 'pastor@grace.org' });
+    await call(h, 'directory.import', { ...as(RYAN), records: [{ account: CHURCH, email: 'office@grace.org', verifiedAt: 1 }] });
+    const id = ((await call(h, 'export.request', { ...as(RYAN), app: 'gcid', accounts: [HOST, CHURCH] })).body.request as { id: string }).id;
+    await call(h, 'export.approve', { ...as(PAUL), id });
+    const got = await call(h, 'export.fetch', { ...as(RYAN), id });
+    // The approved download still carries the real addresses...
+    expect((got.body.rows as { email: string }[]).map((r) => r.email)).toEqual(['pastor@grace.org', 'office@grace.org']);
+    // ...but a steward reading the vault directly sees neither.
+    expect(vaultText()).not.toContain('pastor@grace.org');
+    expect(vaultText()).not.toContain('office@grace.org');
+  });
+  it('a record written before sealing still reads, and the seal step rewrites it sealed', async () => {
+    h.vault.set(`contact:${HOST}`, { v: 2, email: 'pastor@grace.org', verifiedAt: 5, source: `org-default:${RYAN}` });
+    expect((await call(h, 'directory.reveal', { ...as(RYAN), account: HOST })).body).toMatchObject({ email: 'pastor@grace.org' });
+    expect((await call(h, 'directory.masked', { ...as(RYAN), accounts: [HOST] })).body.contacts).toMatchObject({ [HOST]: { masked: 'pa•••r@g•••.org', source: 'org-default' } });
+    const r = await call(h, 'directory.seal', { ...as(RYAN), accounts: [HOST, CHURCH] });
+    expect(r.body).toMatchObject({ sealed: 1, checked: 1 });
+    expect(h.vault.get(`contact:${HOST}`)).toMatchObject({ v: 3, source: 'org-default', verifiedAt: 5 });
+    expect(vaultText()).not.toContain('pastor@grace.org');
+    expect(vaultText()).not.toContain('org-default:'); // the old source's address went with it
+    expect((await call(h, 'directory.reveal', { ...as(RYAN), account: HOST })).body).toMatchObject({ email: 'pastor@grace.org' });
+    expect(audit(h).some((e) => e.kind === 'seal')).toBe(true);
+  });
+  it('sealing is admin-only', async () => {
+    expect((await call(h, 'directory.seal', { ...as(MALLORY), accounts: [HOST] })).status).toBe(403);
   });
 });
 
