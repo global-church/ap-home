@@ -53,15 +53,13 @@ function csv(rows: OrganizationRow[], emails?: Map<string, string | null>): stri
 }
 
 /** All accounts (2026-10-26): one row per GCID account — the account, its sign-in email, how it signs in. */
-function accountsCsv(rows: { account: string; email: string | null }[], methods: Map<string, string[]>): string {
+function accountsCsv(rows: { account: string; email: string | null }[]): string {
   const cell = (v: unknown) => {
     const s = String(v ?? '');
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
-  return [['Account', 'Email', 'Signs in with'].join(','), ...rows.map((r) => [r.account, r.email ?? '', (methods.get(r.account) ?? []).join('; ')].map(cell).join(','))].join('\r\n');
+  return [['Account', 'Email'].join(','), ...rows.map((r) => [r.account, r.email ?? ''].map(cell).join(','))].join('\r\n');
 }
-
-const METHOD_WORDS: Record<string, string> = { email: 'Email', phone: 'Phone', google: 'Google', passkey: 'Passkey', other: 'Other' };
 
 function save(name: string, text: string) {
   const a = document.createElement('a');
@@ -120,7 +118,6 @@ export function AdminOrganizations({ session }: { session: Session }) {
     const r = await fetch(`/connect/admin/organizations?app=${encodeURIComponent(app)}`, { headers: { authorization: `Bearer ${token}` } }).catch(() => null);
     const j = (await r?.json().catch(() => null)) as (OrganizationsView & { error?: string }) | null;
     setBusy(false);
-    if (r?.status === 400 && app === 'all-accounts') { setApp('gather-app'); return; }
     if (r?.ok && j) {
       setView(j);
       if (j.masked) void loadSide();
@@ -153,14 +150,14 @@ export function AdminOrganizations({ session }: { session: Session }) {
       if (type !== 'all' && typeKey(o) !== type) return false;
       if (noEmail && reachable(o)) return false;
       if (!needle) return true;
-      return [o.name, o.org, typeText(o), o.orgContact?.email ?? '', ...(o.methods ?? []), ...o.contacts.flatMap((c) => [c.email ?? '', c.account])].some((s) => s.toLowerCase().includes(needle));
+      return [o.name, o.org, typeText(o), o.orgContact?.email ?? '', ...o.contacts.flatMap((c) => [c.email ?? '', c.account])].some((s) => s.toLowerCase().includes(needle));
     });
   }, [base, q, type, noEmail]);
 
   const fileName = (forApp = app) =>
     forApp === 'all-accounts'
       ? `gcid-accounts-${new Date().toISOString().slice(0, 10)}.csv`
-      : `${view?.apps.find((x) => x.id === forApp)?.label ?? forApp}-organizations-${new Date().toISOString().slice(0, 10)}.csv`;
+      : `gcid-organizations-${new Date().toISOString().slice(0, 10)}.csv`;
 
   const run = async (fn: () => Promise<void>) => {
     setError(null);
@@ -192,8 +189,7 @@ export function AdminOrganizations({ session }: { session: Session }) {
     const got = await directory<{ rows: { account: string; email: string | null }[] }>('export-fetch', { id: r.id });
     if (r.app === 'all-accounts') {
       // Built from the approved rows themselves, so it is right whichever list is on screen.
-      const methods = new Map((view?.rows === 'accounts' ? view.orgs : []).map((o) => [o.org, o.methods ?? []]));
-      save(fileName('all-accounts'), accountsCsv(got.rows, methods));
+      save(fileName('all-accounts'), accountsCsv(got.rows));
       void loadSide();
       return;
     }
@@ -273,13 +269,13 @@ export function AdminOrganizations({ session }: { session: Session }) {
     <>
       <Toolbar>
         <label className="admin-orgs__app">
-          <span>App</span>
+          <span>View</span>
           <select value={app} onChange={(e) => { setApp(e.target.value); setType('all'); setNoEmail(false); }} data-testid="admin-orgs-app">
-            {(view?.apps ?? [{ id: 'all-accounts', label: 'All accounts' }, { id: 'gather-app', label: 'Gather' }]).map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
+            {(view?.apps ?? [{ id: 'all-accounts', label: 'All accounts' }, { id: 'all-organizations', label: 'All organizations' }]).map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
           </select>
         </label>
         <div className="admin-orgs__search">
-          <SearchInput value={q} onChange={(e) => setQ(e.target.value)} placeholder={accountsMode ? 'Search address, email or sign-in' : 'Search name, type or address'} aria-label={accountsMode ? 'Search accounts' : 'Search organizations'} data-testid="admin-orgs-q" />
+          <SearchInput value={q} onChange={(e) => setQ(e.target.value)} placeholder={accountsMode ? 'Search address or email' : 'Search name, type or address'} aria-label={accountsMode ? 'Search accounts' : 'Search organizations'} data-testid="admin-orgs-q" />
         </div>
         {masked ? (
           <Button size="sm" onClick={() => void requestExport()} disabled={!shown.length} data-testid="admin-orgs-export-request">Request export</Button>
@@ -361,12 +357,11 @@ export function AdminOrganizations({ session }: { session: Session }) {
             ) : (
               <div className="admin-orgs__scroll">
                 <table className="admin-orgs__table">
-                  <thead><tr><th>Account</th><th>Signs in with</th><th>Email</th></tr></thead>
+                  <thead><tr><th>Account</th><th>Email</th></tr></thead>
                   <tbody>
                     {shown.map((o) => (
                       <tr key={o.org} data-testid={`admin-accounts-row-${o.org.slice(2, 10)}`}>
                         <td><Mono title={o.org}>{short(o.org)}</Mono>{o.test && <> <Meta>test</Meta></>}</td>
-                        <td>{(o.methods ?? []).map((m) => METHOD_WORDS[m] ?? m).join(', ') || '—'}</td>
                         <td>{o.orgContact ? emailCell(o.org, o.orgContact.email) : <Meta>No email on file</Meta>}</td>
                       </tr>
                     ))}

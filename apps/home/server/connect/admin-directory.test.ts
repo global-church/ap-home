@@ -76,7 +76,7 @@ describe('the organizations list', () => {
     expect(doCalls).toHaveLength(0);
   });
   it('for an admin, carries masked addresses only, and asks the directory with the admin’s own session and grant', async () => {
-    const r = await onAdminOrganizations({ request: req('/connect/admin/organizations', `tok:${RYAN}`), env });
+    const r = await onAdminOrganizations({ request: req('/connect/admin/organizations?app=all-organizations', `tok:${RYAN}`), env });
     const text = await r.text();
     expect(r.status).toBe(200);
     expect(text).toContain('pa•••r@g•••.org');
@@ -100,9 +100,9 @@ describe('All accounts (2026-10-26)', () => {
     expect(j.orgs.find((o) => o.org === HOST)?.orgContact?.email).toBe('pa•••r@g•••.org');
     expect(text).not.toContain('pastor@grace.org');
   });
-  it('is not offered without the operator directory', async () => {
+  it('nothing is listed without the operator directory (no fallback)', async () => {
     const plain = { ...(env as object), HOME_OPERATOR_ORG: undefined, HOME_ADMINS: RYAN } as never;
-    expect((await onAdminOrganizations({ request: req('/connect/admin/organizations?app=all-accounts', `tok:${RYAN}`), env: plain })).status).toBe(400);
+    expect((await onAdminOrganizations({ request: req('/connect/admin/organizations?app=all-accounts', `tok:${RYAN}`), env: plain })).status).toBe(409);
   });
 });
 

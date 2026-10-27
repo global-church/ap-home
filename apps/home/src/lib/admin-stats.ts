@@ -241,11 +241,10 @@ export function tallyOrgTypes(links: { key: string; value: string | null }[], te
   };
 }
 
-// ── Organizations by app (2026-10-22) ────────────────────────────────────────────────────────────────────────────
-// Admin's Organizations tab: every organization an app (an OIDC client, e.g. Gather's `gather-app`) brought to this
-// Home, with its name, type and the people who manage it. Built from the related links alone:
-//  - an organization belongs to the app when a link to it was granted to that client (`requestedBy`), or when a
-//    workspace the app created is governed by it (a host who picked an organization they already had);
+// ── All organizations (2026-10-27; was "organizations by app", 2026-10-22) ─────────────────────────────────────────
+// Admin's Organizations view: every organization on this Home, with its name, type and the people who manage it.
+// Which app an organization came through is deliberately NOT read (Paul + Rich, 2026-10-27: GCID Admin must not show
+// it; in AP Home the field recording which app asked only scopes that app's own view). Built from the related links alone:
 //  - its managers are the links to it that are not memberships (`relationship: 'member'`), a person's own names,
 //    or the organization itself. Members are counted, never listed;
 //  - deleted organizations and workspaces are left out; an organization only test people manage is marked `test`.
@@ -268,7 +267,7 @@ export interface AppOrg {
 
 type LinkValue = {
   orgName?: string; displayName?: string; kind?: string; relationship?: string; status?: string; createdAt?: number;
-  requestedBy?: string; governor?: string; orgType?: { iri?: unknown; label?: unknown; other?: unknown };
+  orgType?: { iri?: unknown; label?: unknown; other?: unknown };
 };
 
 function readType(t: LinkValue['orgType']): AppOrgType | null {
@@ -278,9 +277,8 @@ function readType(t: LinkValue['orgType']): AppOrgType | null {
   return null;
 }
 
-export function listAppOrganizations(
+export function listAllOrganizations(
   links: { key: string; value: string | null }[],
-  app: string,
   testPeople: ReadonlySet<string> = new Set(),
 ): AppOrg[] {
   const parsed: { person: string; org: string; v: LinkValue }[] = [];
@@ -295,19 +293,8 @@ export function listAppOrganizations(
       /* unreadable link: skipped */
     }
   }
-  // Which organizations the app brought here.
-  const ours = new Set<string>();
-  for (const { org, v } of parsed) {
-    if (v.requestedBy !== app) continue;
-    const kind = (v.kind ?? 'org').toLowerCase();
-    if (kind === 'workspace') {
-      const g = (v.governor ?? '').toLowerCase();
-      if (ADDRESS.test(g)) ours.add(g);
-    } else if (kind !== 'person') ours.add(org);
-  }
   const byOrg = new Map<string, AppOrg & { deleted: boolean; workspace: boolean; firstAt: Map<string, number> }>();
   for (const { person, org, v } of parsed) {
-    if (!ours.has(org)) continue;
     const rel = (v.relationship ?? '').toLowerCase();
     const kind = (v.kind ?? 'org').toLowerCase();
     if (kind === 'person' || rel === 'self') continue;

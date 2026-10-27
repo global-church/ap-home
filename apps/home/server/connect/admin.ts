@@ -11,7 +11,7 @@
 import { importJwks, verifyAgentSession } from '@agenticprimitives/connect';
 import { getServer, ownIssuer, type Env, type FnContext, type KVNamespace } from '../_lib/server-broker';
 import {
-  FACET_PREFIXES, countAccounts, countOrgs, dayOf, growth, isAdmin, listAccounts, listAppOrganizations, parseAdmins, recordSnapshot, tallyOrgTypes,
+  FACET_PREFIXES, countAccounts, countOrgs, dayOf, growth, isAdmin, listAccounts, listAllOrganizations, parseAdmins, recordSnapshot, tallyOrgTypes,
   type AccountCounts, type AppOrg, type OrgCounts, type OrgTypeTally, type Snapshot,
 } from '../../src/lib/admin-stats';
 import { costQueries, parseLabels, shapeCosts, type CostTable, type CostsResult } from '../../src/lib/azure-costs';
@@ -155,12 +155,11 @@ export const onAdminOrgTypes = async ({ request, env }: FnContext): Promise<Resp
 // one-at-a-time Contact lookup (2026-10-21): Paul wants the list. This is the one Admin route that returns email
 // addresses; each call is recorded once (who, when, which app, how many addresses), and the page shows that record.
 
-/** The apps the tab can show, by OIDC client id. Gather is the only one today. */
-export const ADMIN_APPS = [{ id: 'gather-app', label: 'Gather' }] as const;
-/** Admin → All accounts (2026-10-26): every GCID account at the email it signs in with, whatever app it came through.
- *  Shown in the same list as an app's organizations (each row is one account), so search, Show and the two-admin export
- *  work the same way. Needs the operator directory: the sign-in emails live there. */
+/** Admin → Organizations' views (2026-10-27). None of them says which app a person or organization came through
+ *  (Paul + Rich): every view is the whole Home, at the operator directory's masked contacts. */
 export const ALL_ACCOUNTS = { id: 'all-accounts', label: 'All accounts' } as const;
+export const ALL_ORGANIZATIONS = { id: 'all-organizations', label: 'All organizations' } as const;
+export const ADMIN_VIEWS = [ALL_ACCOUNTS, ALL_ORGANIZATIONS] as const;
 
 export interface OrgContact { account: string; email: string | null; verifiedAt: number | null }
 export interface OrganizationRow extends Omit<AppOrg, 'stewards'> {
@@ -168,21 +167,17 @@ export interface OrganizationRow extends Omit<AppOrg, 'stewards'> {
   orgContact: { email: string; verifiedAt: number; changed: boolean } | null;
   /** The people who manage it, at the email they sign in with. */
   contacts: OrgContact[];
-  /** All accounts only: how this account signs in. */
-  methods?: string[];
 }
 export interface OrganizationsView {
+  /** The views the page can switch between (the field keeps its old name, `apps`, for the page). */
   apps: { id: string; label: string }[];
   app: string;
-  /** False when this Home has no CONTACT_DIRECTORY_KEY: organizations are listed, emails are not. */
   emails: boolean;
-  /** True with the operator directory (2026-10-23): every address here is MASKED; a full one comes from a reveal or an
-   *  approved export (POST /connect/admin/directory). */
-  masked?: boolean;
+  /** Every address here is MASKED; a full one comes from a reveal or an approved export (POST /connect/admin/directory). */
+  masked: true;
   orgs: OrganizationRow[];
-  /** What each row is: an organization (an app's view) or one GCID account (All accounts). */
-  rows?: 'organizations' | 'accounts';
-  /** The last views of this list, newest first (this one included). */
+  /** What each row is: an organization, or one GCID account. */
+  rows: 'organizations' | 'accounts';
   views: ContactView[];
   asOf: number;
 }
@@ -191,46 +186,42 @@ export const onAdminOrganizations = async ({ request, env }: FnContext): Promise
   const g = await session(request, env);
   if (!g.ok) return g.res;
   if (!g.admin) return json({ error: 'not an admin of this Home' }, 403);
-  const app = new URL(request.url).searchParams.get('app') ?? ADMIN_APPS[0].id;
-  const apps = operatorOrg(env) ? [ALL_ACCOUNTS, ...ADMIN_APPS] : [...ADMIN_APPS];
-  if (!apps.some((a) => a.id === app)) return json({ error: app === ALL_ACCOUNTS.id ? 'All accounts needs the operator directory' : `unknown app: ${app}` }, 400);
+  // The lists live in the operator directory; without it there is nothing to show (no fallback, ADR-0013).
+  if (!operatorOrg(env)) return json({ error: 'the organization and account lists need the operator directory' }, 409);
+  const app = new URL(request.url).searchParams.get('app') ?? ALL_ACCOUNTS.id;
+  if (!ADMIN_VIEWS.some((v) => v.id === app)) return json({ error: `unknown view: ${app}` }, 400);
   const kv = env.AUTH_CODES;
   const testPeople = testAddresses(await listKeys(kv, TEST_AGENT_PREFIX));
+  type Masked = { error: Response; contacts?: undefined } | { error?: undefined; contacts: Record<string, { masked: string; verifiedAt: number; source: string }> };
+  const masked = async (accounts: string[]): Promise<Masked> => {
+    const r = await directoryOp(env, 'directory.masked', { session: g.token, stewardship: g.stewardship, accounts });
+    if (r.status !== 200) return { error: json({ error: String(r.body.error ?? 'the directory is unavailable') }, r.status === 409 ? 409 : 502) };
+    return { contacts: (r.body.contacts ?? {}) as Record<string, { masked: string; verifiedAt: number; source: string }> };
+  };
+  const base = { apps: [...ADMIN_VIEWS], app, emails: true, masked: true as const, views: [], asOf: Date.now() };
   if (app === ALL_ACCOUNTS.id) {
     const people = listAccounts(await readAll(kv, (await Promise.all(FACET_PREFIXES.map((p) => listKeys(kv, p)))).flat()), testPeople);
-    const r = await directoryOp(env, 'directory.masked', { session: g.token, stewardship: g.stewardship, accounts: people.map((p) => p.account) });
-    if (r.status !== 200) return json({ error: String(r.body.error ?? 'the directory is unavailable') }, r.status === 409 ? 409 : 502);
-    const c = (r.body.contacts ?? {}) as Record<string, { masked: string; verifiedAt: number }>;
+    const m = await masked(people.map((p) => p.account));
+    if (m.error) return m.error;
+    const c = m.contacts;
+    // Each row is one account at its sign-in email. How it signs in is not shown (the counts stay on Overview).
     const rowsA: OrganizationRow[] = people.map((p) => ({
-      org: p.account, name: '', handle: '', createdAt: null, type: null, members: 0, test: p.test, methods: p.methods,
+      org: p.account, name: '', handle: '', createdAt: null, type: null, members: 0, test: p.test,
       orgContact: c[p.account] ? { email: c[p.account]!.masked, verifiedAt: c[p.account]!.verifiedAt, changed: false } : null,
       contacts: [],
     }));
-    return json({ apps, app, emails: true, masked: true, rows: 'accounts', orgs: rowsA, views: [], asOf: Date.now() } satisfies OrganizationsView);
+    return json({ ...base, rows: 'accounts', orgs: rowsA } satisfies OrganizationsView);
   }
-  const orgs = listAppOrganizations(await readAll(kv, await listKeys(kv, 'related:')), app, testPeople);
-  if (operatorOrg(env)) {
-    const accounts = [...new Set(orgs.flatMap((o) => [o.org, ...o.stewards]))];
-    const r = await directoryOp(env, 'directory.masked', { session: g.token, stewardship: g.stewardship, accounts });
-    if (r.status !== 200) return json({ error: String(r.body.error ?? 'the directory is unavailable') }, r.status === 409 ? 409 : 502);
-    const c = (r.body.contacts ?? {}) as Record<string, { masked: string; verifiedAt: number; source: string }>;
-    const rowsM: OrganizationRow[] = orgs.map(({ stewards, ...o }) => ({
-      ...o,
-      orgContact: c[o.org] ? { email: c[o.org]!.masked, verifiedAt: c[o.org]!.verifiedAt, changed: c[o.org]!.source === 'org-verified' } : null,
-      contacts: stewards.map((account) => ({ account, email: c[account]?.masked ?? null, verifiedAt: c[account]?.verifiedAt ?? null })),
-    }));
-    return json({ apps, app, emails: true, masked: true, rows: 'organizations', orgs: rowsM, views: [], asOf: Date.now() } satisfies OrganizationsView);
-  }
-  const emails = contactDirectoryEnabled(env);
-  const found = emails ? await readContactEmails(env, orgs.flatMap((o) => [o.org, ...o.stewards])) : new Map();
-  const rows: OrganizationRow[] = orgs.map(({ stewards, ...o }) => ({
+  const orgs = listAllOrganizations(await readAll(kv, await listKeys(kv, 'related:')), testPeople);
+  const m = await masked([...new Set(orgs.flatMap((o) => [o.org, ...o.stewards]))]);
+  if (m.error) return m.error;
+  const c = m.contacts;
+  const rowsM: OrganizationRow[] = orgs.map(({ stewards, ...o }) => ({
     ...o,
-    orgContact: found.get(o.org) ? { email: found.get(o.org)!.email, verifiedAt: found.get(o.org)!.verifiedAt, changed: found.get(o.org)!.source.startsWith('org-verified') } : null,
-    contacts: stewards.map((account) => ({ account, email: found.get(account)?.email ?? null, verifiedAt: found.get(account)?.verifiedAt ?? null })),
+    orgContact: c[o.org] ? { email: c[o.org]!.masked, verifiedAt: c[o.org]!.verifiedAt, changed: c[o.org]!.source === 'org-verified' } : null,
+    contacts: stewards.map((account) => ({ account, email: c[account]?.masked ?? null, verifiedAt: c[account]?.verifiedAt ?? null })),
   }));
-  const now = Date.now();
-  if (emails) await recordContactView(kv, { by: accountAddress(g.sub) ?? g.sub, at: now, what: `organizations: ${app}`, count: found.size });
-  return json({ apps: [...ADMIN_APPS], app, emails, orgs: rows, views: await contactViews(kv, 10), asOf: now } satisfies OrganizationsView);
+  return json({ ...base, rows: 'organizations', orgs: rowsM } satisfies OrganizationsView);
 };
 
 // ── The operator directory's admin actions (2026-10-23) ──────────────────────────────────────────────────────────

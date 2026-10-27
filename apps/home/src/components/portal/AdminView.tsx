@@ -76,7 +76,7 @@ export function AdminView() {
     <>
       <PageHead
         title="Admin"
-        description={tab === 'overview' ? 'How many people use GCID, and what running it costs on Azure.' : 'The organizations each app brought to GCID, with their type and who to contact.'}
+        description={tab === 'overview' ? 'How many people use GCID, and what running it costs on Azure.' : 'Every account and organization on GCID, at a masked contact. Showing one is recorded; a full export needs a second admin.'}
         actions={tab === 'overview' ? <Button size="sm" onClick={() => void refresh()} disabled={busy || !session}>{busy ? 'Refreshing…' : 'Refresh'}</Button> : undefined}
       />
       <Tabs label="Admin" value={tab} onChange={setTab} items={[{ id: 'overview', label: 'Overview' }, { id: 'organizations', label: 'Organizations' }]} />
