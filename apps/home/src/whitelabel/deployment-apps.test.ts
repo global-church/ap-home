@@ -23,6 +23,12 @@ describe('the built-in apps a deployment accepts (2026-10-27)', () => {
   });
 });
 
+it('redirect hosts keep only return addresses on the named domains (another estate’s defaults go)', () => {
+  const apps = [app('gather-app', ['https://gather27.gccommons.app/', 'https://ops.gather27.gccommons.app/', 'https://gather27-web.other-estate.workers.dev/', 'https://groups.gather27.com/'])];
+  expect(deploymentRelyingApps(apps, 'gather-app', 'off', 'gccommons.app, gather27.com')[0]!.redirect_uris)
+    .toEqual(['https://gather27.gccommons.app/', 'https://ops.gather27.gccommons.app/', 'https://groups.gather27.com/']);
+});
+
 describe('the skills registry setting', () => {
   it('off means none; unset keeps the upstream default; a value is used as given', () => {
     expect(skillsRegistryOrigin('off')).toBe('');

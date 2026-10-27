@@ -1321,7 +1321,7 @@ export function isPaymentTemplate(template: string | null | undefined): boolean 
 // The deployment names the built-in apps it accepts (deployment-apps.ts); unset keeps them all.
 export const whitelabel: WhiteLabelConfig = {
   ...faithImpact,
-  relyingApps: deploymentRelyingApps(faithImpact.relyingApps, process.env.NEXT_PUBLIC_RELYING_APPS, process.env.NEXT_PUBLIC_LOCAL_REDIRECTS),
+  relyingApps: deploymentRelyingApps(faithImpact.relyingApps, process.env.NEXT_PUBLIC_RELYING_APPS, process.env.NEXT_PUBLIC_LOCAL_REDIRECTS, process.env.NEXT_PUBLIC_REDIRECT_HOSTS),
 };
 
 /** Interpolate {name} / {app} (and any {token}) into a copy string. Missing tokens stay literal. */
